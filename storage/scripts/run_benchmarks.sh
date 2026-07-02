@@ -297,7 +297,8 @@ write_benchmark_env() {
   write_env_file "$tmp" \
     BENCHMARK_NAME BENCHMARK_TOOL REPETITIONS COOLDOWN_SEC OS_TUNING BENCHMARK_CPU_LIST \
     STORAGE_TARGET_NAME STORAGE_TARGET_MOUNT STORAGE_TARGET_DEVICE STORAGE_TARGET_FILESYSTEM \
-    FIO_IOENGINE FIO_RW FIO_BS FIO_IODEPTH FIO_NUMJOBS FIO_RUNTIME_SEC FIO_DIRECT FIO_GROUP_REPORTING FIO_TIME_BASED FIO_SIZE
+    FIO_IOENGINE FIO_RW FIO_BS FIO_IODEPTH FIO_NUMJOBS FIO_RUNTIME_SEC FIO_DIRECT FIO_GROUP_REPORTING FIO_TIME_BASED FIO_SIZE \
+    FIO_FSYNC FIO_FDATASYNC
   scp_to "$tmp" "$BENCHMARK_HOST" "${remote_target_dir}/benchmark.env"
   rm -f "$tmp"
 }
@@ -332,6 +333,12 @@ run_one_fio_repetition() {
   fi
   if [[ -n "${FIO_SIZE:-}" ]]; then
     fio_cmd+=(--size "$FIO_SIZE")
+  fi
+  if [[ "${FIO_FSYNC:-0}" != "0" ]]; then
+    fio_cmd+=(--fsync "$FIO_FSYNC")
+  fi
+  if [[ "${FIO_FDATASYNC:-0}" != "0" ]]; then
+    fio_cmd+=(--fdatasync "$FIO_FDATASYNC")
   fi
 
   set +e
@@ -375,6 +382,8 @@ run_fio_benchmark() {
   FIO_GROUP_REPORTING="${FIO_GROUP_REPORTING:-1}"
   FIO_TIME_BASED="${FIO_TIME_BASED:-1}"
   FIO_SIZE="${FIO_SIZE:-}"
+  FIO_FSYNC="${FIO_FSYNC:-0}"
+  FIO_FDATASYNC="${FIO_FDATASYNC:-0}"
 
   validate_int REPETITIONS "$REPETITIONS"
   validate_int COOLDOWN_SEC "$COOLDOWN_SEC"
@@ -384,6 +393,8 @@ run_fio_benchmark() {
   validate_int FIO_DIRECT "$FIO_DIRECT"
   validate_int FIO_GROUP_REPORTING "$FIO_GROUP_REPORTING"
   validate_int FIO_TIME_BASED "$FIO_TIME_BASED"
+  validate_int FIO_FSYNC "$FIO_FSYNC"
+  validate_int FIO_FDATASYNC "$FIO_FDATASYNC"
   validate_size FIO_BS "$FIO_BS"
   if [[ -n "$FIO_SIZE" ]]; then
     validate_size FIO_SIZE "$FIO_SIZE"
@@ -391,6 +402,9 @@ run_fio_benchmark() {
 
   [[ -n "$FIO_IOENGINE" ]] || die "${benchmark_file}: FIO_IOENGINE is required"
   [[ -n "$FIO_RW" ]] || die "${benchmark_file}: FIO_RW is required"
+  if (( FIO_FSYNC > 0 && FIO_FDATASYNC > 0 )); then
+    die "${benchmark_file}: only one of FIO_FSYNC or FIO_FDATASYNC may be non-zero"
+  fi
 
   local remote_target_dir
   local target_name
@@ -442,7 +456,7 @@ mapfile -t benchmark_files < <(find "$BENCHMARK_DIR" -maxdepth 1 -type f -name '
 for benchmark_file in "${benchmark_files[@]}"; do
   unset BENCHMARK_NAME BENCHMARK_TOOL SKIP SKIP_REASON
   unset REPETITIONS COOLDOWN_SEC
-  unset FIO_IOENGINE FIO_RW FIO_BS FIO_IODEPTH FIO_NUMJOBS FIO_RUNTIME_SEC FIO_DIRECT FIO_GROUP_REPORTING FIO_TIME_BASED FIO_SIZE
+  unset FIO_IOENGINE FIO_RW FIO_BS FIO_IODEPTH FIO_NUMJOBS FIO_RUNTIME_SEC FIO_DIRECT FIO_GROUP_REPORTING FIO_TIME_BASED FIO_SIZE FIO_FSYNC FIO_FDATASYNC
   REPETITIONS=1
   COOLDOWN_SEC=2
 

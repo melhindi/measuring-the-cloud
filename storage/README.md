@@ -180,12 +180,19 @@ FIO_DIRECT=1
 FIO_GROUP_REPORTING=1
 FIO_TIME_BASED=1
 FIO_SIZE=1G
+FIO_FSYNC=0
+FIO_FDATASYNC=0
 REPETITIONS=3
 COOLDOWN_SEC=5
 ```
 
 For the `psync` latency profiles, use the same shape with
 `FIO_IOENGINE=psync` and `FIO_IODEPTH=1`.
+
+`FIO_FSYNC` and `FIO_FDATASYNC` are optional integer fio parameters. A value of
+`0` leaves sync disabled. A value of `N` means fio calls the corresponding sync
+operation after every `N` write operations. Only one of these knobs should be
+non-zero in the same benchmark file.
 
 The runner automatically wraps the command with `taskset`, uses all CPUs
 except CPU 0 when possible, and skips the root volume. Storage targets are

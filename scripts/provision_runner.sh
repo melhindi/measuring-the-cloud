@@ -445,6 +445,9 @@ done
 for benchmark in "${BENCHMARK_NAMES[@]}"; do
   remote_runner_args+=(--benchmark "$benchmark")
 done
+if [[ "$CONTINUE_ON_ERROR" -eq 1 ]]; then
+  remote_runner_args+=(--continue-on-error)
+fi
 
 log "starting detached benchmark run on the runner"
 runner_ssh "$RUNNER_PUBLIC_IP" "cd '${RUNNER_WORKDIR}' && bash ./scripts/launch_runner_job.sh --workload '${WORKLOAD}' --run-id '${RUN_ID}' --destroy '${DESTROY_MODE}' --access-mode private --auth-env-file '${REMOTE_AUTH_ENV}' -- $(shell_join "${remote_runner_args[@]}")"

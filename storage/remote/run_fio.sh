@@ -16,6 +16,8 @@ GROUP_REPORTING="1"
 TIME_BASED="1"
 SIZE=""
 CPU_LIST=""
+FSYNC="0"
+FDATASYNC="0"
 
 default_cpu_list() {
   local n
@@ -29,7 +31,7 @@ default_cpu_list() {
 
 usage() {
   cat >&2 <<USAGE
-usage: $0 (--mount-point PATH | --device PATH) --out-dir PATH [--name NAME] [--ioengine NAME] [--rw MODE] [--bs SIZE] [--iodepth N] [--numjobs N] [--runtime-sec N] [--direct 0|1] [--group-reporting 0|1] [--time-based 0|1] [--size SIZE] [--cpu-list LIST]
+usage: $0 (--mount-point PATH | --device PATH) --out-dir PATH [--name NAME] [--ioengine NAME] [--rw MODE] [--bs SIZE] [--iodepth N] [--numjobs N] [--runtime-sec N] [--direct 0|1] [--group-reporting 0|1] [--time-based 0|1] [--size SIZE] [--cpu-list LIST] [--fsync N] [--fdatasync N]
 USAGE
 }
 
@@ -50,6 +52,8 @@ while [[ $# -gt 0 ]]; do
     --time-based) TIME_BASED="$2"; shift 2 ;;
     --size) SIZE="$2"; shift 2 ;;
     --cpu-list) CPU_LIST="$2"; shift 2 ;;
+    --fsync) FSYNC="$2"; shift 2 ;;
+    --fdatasync) FDATASYNC="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage; exit 1 ;;
   esac
@@ -64,6 +68,12 @@ if [[ -z "$MOUNT_POINT" && -z "$DEVICE" ]]; then
   exit 1
 fi
 [[ -n "$OUT_DIR" ]] || { usage; exit 1; }
+[[ "$FSYNC" =~ ^[0-9]+$ ]] || { echo "--fsync must be an integer" >&2; exit 1; }
+[[ "$FDATASYNC" =~ ^[0-9]+$ ]] || { echo "--fdatasync must be an integer" >&2; exit 1; }
+if [[ "$FSYNC" != "0" && "$FDATASYNC" != "0" ]]; then
+  echo "--fsync and --fdatasync cannot both be non-zero" >&2
+  exit 1
+fi
 command -v fio >/dev/null 2>&1 || { echo "fio not found" >&2; exit 1; }
 command -v taskset >/dev/null 2>&1 || { echo "taskset not found" >&2; exit 1; }
 CPU_LIST="${CPU_LIST:-$(default_cpu_list)}"
@@ -78,6 +88,12 @@ else
 fi
 if [[ -n "$SIZE" ]]; then
   cmd+=(--size "$SIZE")
+fi
+if [[ "$FSYNC" != "0" ]]; then
+  cmd+=(--fsync="$FSYNC")
+fi
+if [[ "$FDATASYNC" != "0" ]]; then
+  cmd+=(--fdatasync="$FDATASYNC")
 fi
 
 printf '%q' "${cmd[0]}" >"${OUT_DIR}/fio.cmd"

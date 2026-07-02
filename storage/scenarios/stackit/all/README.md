@@ -17,10 +17,13 @@ Use this folder when you want the full storage benchmark matrix:
 The files may overlap with focused subset folders. That duplication is
 intentional: this folder is the stable "run everything" entry point.
 
-It also includes the representative filesystem-backed scenarios from
-`../filesystem/`:
+It also includes the representative combined local-plus-block filesystem
+comparison scenarios from `../filesystem/`:
 
-- combined local `raw` plus block `raw` on the same VM
-- combined local `xfs` plus block `xfs` on the same VM
+- combined local `raw` plus block `raw` on the same VM using `g2a.60d`
+- combined local `ext4` plus block `ext4` on the same VM using `g2a.60d`
+- combined local `xfs` plus block `xfs` on the same VM using `g2a.60d`
 
-The filesystem subset contributes only the combined representative scenarios.
+No standalone `local_xfs` or block-only `*_xfs` compatibility leftovers are
+kept here; the filesystem subset contributes only those three combined
+representative scenarios.

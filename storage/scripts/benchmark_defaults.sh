@@ -16,3 +16,5 @@
 : "${FIO_GROUP_REPORTING:=1}"
 : "${FIO_TIME_BASED:=1}"
 : "${FIO_SIZE:=1G}"
+: "${FIO_FSYNC:=0}"
+: "${FIO_FDATASYNC:=0}"

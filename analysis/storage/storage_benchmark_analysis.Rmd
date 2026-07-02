@@ -49,10 +49,18 @@ con <- duckdbcons[[":memory:"]]
 DBI::dbExecute(con, "drop table if exists scenarios")
 DBI::dbExecute(con, "drop table if exists benchmarks")
 DBI::dbExecute(con, "drop table if exists fio")
+DBI::dbExecute(con, "drop table if exists fio_all")
 DBI::dbExecute(con, "drop table if exists failures")
 DBI::dbExecute(con, sprintf("create table scenarios as select * from read_csv_auto('%s')", csv_sql_path("storage_scenarios.csv")))
 DBI::dbExecute(con, sprintf("create table benchmarks as select * from read_csv_auto('%s')", csv_sql_path("storage_benchmarks.csv")))
-DBI::dbExecute(con, sprintf("create table fio as select * from read_csv_auto('%s')", csv_sql_path("storage_fio.csv")))
+DBI::dbExecute(con, sprintf("create table fio_all as select * from read_csv_auto('%s')", csv_sql_path("storage_fio.csv")))
+DBI::dbExecute(con, "
+create view fio as
+select *
+from fio_all
+where coalesce(durability_mode, 'none') = 'none'
+  and coalesce(durability_every_ops, 0) = 0
+")
 DBI::dbExecute(con, sprintf("create table failures as select * from read_csv_auto('%s')", csv_sql_path("storage_failures.csv")))
 
 merge_lists <- function(base, overrides) {
@@ -88,6 +96,12 @@ default_report_config <- list(
   latency_reference_block_size = "4k",
   latency_reference_iodepth = 1,
   latency_reference_numjobs = 1,
+  durability_reference_io_engine = "psync",
+  durability_reference_block_size = "4k",
+  durability_reference_iodepth = 1,
+  durability_reference_numjobs = 1,
+  reference_durability_mode = "none",
+  reference_durability_every_ops = 0,
   psync_iodepth = 1,
   psync_numjobs = 1,
   block_size_comparison = data.frame(
@@ -382,6 +396,39 @@ display_perf_class_order <- vapply(
   character(1)
 )
 
+durability_order_key <- function(label) {
+  if (is.na(label) || !nzchar(label)) return(9999)
+  if (identical(label, "none")) return(0)
+  parts <- strsplit(label, "/", fixed = TRUE)[[1]]
+  mode <- parts[[1]]
+  every_ops <- suppressWarnings(as.numeric(parts[[2]] %||% NA))
+  mode_rank <- switch(mode, fsync = 1, fdatasync = 2, 9)
+  mode_rank * 100000 + ifelse(is.na(every_ops), 99999, every_ops)
+}
+
+durability_label_levels <- function(values) {
+  values <- unique(as.character(values))
+  values <- values[!is.na(values) & nzchar(values)]
+  if (length(values) == 0) return("none")
+  values[order(vapply(values, durability_order_key, numeric(1)))]
+}
+
+durability_label_from_fields <- function(mode, every_ops) {
+  mode <- as.character(mode %||% "none")
+  if (is.na(mode) || !nzchar(mode) || identical(mode, "none")) return("none")
+  every_ops <- suppressWarnings(as.numeric(every_ops))
+  if (is.na(every_ops) || every_ops <= 0) return(mode)
+  sprintf("%s/%s", mode, format(every_ops, trim = TRUE, scientific = FALSE))
+}
+
+baseline_durability_clause <- function(alias = NULL, indent = "    ") {
+  prefix <- if (is.null(alias) || !nzchar(alias)) "" else paste0(alias, ".")
+  paste0(
+    indent, "and coalesce(", prefix, "durability_mode, 'none') = 'none'\n",
+    indent, "and coalesce(", prefix, "durability_every_ops, 0) = 0"
+  )
+}
+
 apply_factor_levels <- function(df, provider = NULL) {
   df <- apply_performance_class_display(df, provider = provider)
   cfg <- if (!is.null(provider)) provider_configs[[provider]] else NULL
@@ -416,6 +463,12 @@ apply_factor_levels <- function(df, provider = NULL) {
   if ("block_volume_performance_class" %in% names(df)) {
     perf_levels <- unique(c(display_perf_class_order, as.character(df$block_volume_performance_class)))
     df$block_volume_performance_class <- factor(df$block_volume_performance_class, levels = perf_levels)
+  }
+  if ("durability_label" %in% names(df)) {
+    df$durability_label <- factor(df$durability_label, levels = durability_label_levels(df$durability_label))
+  }
+  if ("durability_mode" %in% names(df)) {
+    df$durability_mode <- factor(df$durability_mode, levels = c("none", "fsync", "fdatasync"))
   }
   if ("latency_metric" %in% names(df)) df$latency_metric <- factor(df$latency_metric, levels = c("avg", "p50", "p99", "p99.9"))
   if ("execution_config" %in% names(df)) df$execution_config <- factor(df$execution_config, levels = unique(df$execution_config))
@@ -596,7 +649,7 @@ resolve_reference_perf_label <- function(provider, perf_class) {
   perf_literal <- quote_sql(perf_class)
   ref_df <- sql(glue::glue("
   select provider, block_volume_performance_class, block_volume_type, block_volume_iops, block_volume_throughput_mbps
-  from fio
+  from fio_all
   where provider = {provider_literal}
     and block_volume_performance_class = {perf_literal}
     and block_volume_performance_class is not null
@@ -619,22 +672,25 @@ filter_text <- function(provider, family) {
   ref_perf_label <- resolve_reference_perf_label(provider, cfg$reference_block_performance_class)
   if (identical(family, "throughput")) {
     sprintf(
-      "Provider = %s, reference_machine_type = %s, reference performance class = %s, os_tuning = %s, io_engine = %s, block_size = %s, iodepth = %s, numjobs = %s, reference block filesystem = %s, reference local filesystem = %s.",
+      "Provider = %s, reference_machine_type = %s, reference performance class = %s, os_tuning = %s, io_engine = %s, block_size = %s, iodepth = %s, numjobs = %s, reference durability = %s/%s, reference block filesystem = %s, reference local filesystem = %s.",
       provider_label(provider), cfg$reference_machine_type, ref_perf_label, cfg$reference_os_tuning, cfg$throughput_reference_io_engine,
       cfg$throughput_reference_block_size, cfg$throughput_reference_iodepth, cfg$throughput_reference_numjobs,
+      cfg$reference_durability_mode, cfg$reference_durability_every_ops,
       cfg$reference_block_filesystem, cfg$reference_local_filesystem
     )
   } else if (identical(family, "iops")) {
     sprintf(
-      "Provider = %s, reference_machine_type = %s, reference performance class = %s, os_tuning = %s, block_size = %s, io_engine = %s, iodepth = %s, numjobs = %s, reference block filesystem = %s, reference local filesystem = %s.",
+      "Provider = %s, reference_machine_type = %s, reference performance class = %s, os_tuning = %s, block_size = %s, io_engine = %s, iodepth = %s, numjobs = %s, reference durability = %s/%s, reference block filesystem = %s, reference local filesystem = %s.",
       provider_label(provider), cfg$reference_machine_type, ref_perf_label, cfg$reference_os_tuning, cfg$iops_reference_block_size, cfg$iops_reference_io_engine,
-      cfg$iops_reference_iodepth, cfg$iops_reference_numjobs, cfg$reference_block_filesystem, cfg$reference_local_filesystem
+      cfg$iops_reference_iodepth, cfg$iops_reference_numjobs, cfg$reference_durability_mode, cfg$reference_durability_every_ops,
+      cfg$reference_block_filesystem, cfg$reference_local_filesystem
     )
   } else {
     sprintf(
-      "Provider = %s, reference_machine_type = %s, reference performance class = %s, os_tuning = %s, block_size = %s, io_engine = %s, iodepth = %s, numjobs = %s, reference block filesystem = %s, reference local filesystem = %s.",
+      "Provider = %s, reference_machine_type = %s, reference performance class = %s, os_tuning = %s, block_size = %s, io_engine = %s, iodepth = %s, numjobs = %s, reference durability = %s/%s, reference block filesystem = %s, reference local filesystem = %s.",
       provider_label(provider), cfg$reference_machine_type, ref_perf_label, cfg$reference_os_tuning, cfg$latency_reference_block_size, cfg$latency_reference_io_engine,
-      cfg$latency_reference_iodepth, cfg$latency_reference_numjobs, cfg$reference_block_filesystem, cfg$reference_local_filesystem
+      cfg$latency_reference_iodepth, cfg$latency_reference_numjobs, cfg$reference_durability_mode, cfg$reference_durability_every_ops,
+      cfg$reference_block_filesystem, cfg$reference_local_filesystem
     )
   }
 }
@@ -668,6 +724,7 @@ render_performance_class_plots_provider <- function(provider, metric_expression,
       and block_size = {block_size_literal}
       and iodepth = {iodepth_value}
       and numjobs = {numjobs_value}
+{baseline_durability_clause()}
       and block_volume_performance_class is not null
     "))
     print(metric_box(
@@ -695,7 +752,7 @@ render_filesystem_plot <- function(provider, storage_target, metric_expression, 
   df <- provider_query(provider, glue::glue("
   select storage_target_filesystem, benchmark_rw_mode,
          {metric_expression} as metric_value
-  from fio
+  from fio_all
   where provider = {provider_literal}
     and valid_measurement
     and os_tuning = {quote_sql(cfg$reference_os_tuning)}
@@ -708,6 +765,7 @@ render_filesystem_plot <- function(provider, storage_target, metric_expression, 
     and block_size = {block_size_literal}
     and iodepth = {iodepth}
     and numjobs = {numjobs}
+{baseline_durability_clause()}
   "))
   print(metric_box(
     df,
@@ -718,6 +776,61 @@ render_filesystem_plot <- function(provider, storage_target, metric_expression, 
     title = title,
     ylab = ylab,
     ncol = 2,
+    y_zero = y_zero
+  ))
+  cat("\n\n")
+}
+
+render_durability_plot <- function(provider, storage_target, metric_expression, title, ylab,
+                                   block_size, iodepth, io_engine, numjobs, y_zero = TRUE) {
+  cfg <- provider_configs[[provider]]
+  provider_literal <- quote_sql(provider)
+  ref_machine <- quote_sql(cfg$reference_machine_type)
+  ref_perf <- quote_sql(cfg$reference_block_performance_class)
+  block_size_literal <- quote_sql(block_size)
+  target_literal <- quote_sql(storage_target)
+  target_filesystem <- if (identical(storage_target, "block")) cfg$reference_block_filesystem else cfg$reference_local_filesystem
+  df <- provider_query(provider, glue::glue("
+  select benchmark_rw_mode,
+         case
+           when coalesce(fio_fsync, 0) > 0 then concat('fsync/', cast(fio_fsync as varchar))
+           when coalesce(fio_fdatasync, 0) > 0 then concat('fdatasync/', cast(fio_fdatasync as varchar))
+           else 'none'
+         end as durability_label,
+         durability_mode,
+         durability_every_ops,
+         {metric_expression} as metric_value
+  from fio_all
+  where provider = {provider_literal}
+    and valid_measurement
+    and direction = 'write'
+    and os_tuning = {quote_sql(cfg$reference_os_tuning)}
+    and benchmark_machine_type = {ref_machine}
+    and block_volume_performance_class = {ref_perf}
+    and storage_target = {target_literal}
+    and storage_target_filesystem = {quote_sql(target_filesystem)}
+    and io_engine = {quote_sql(io_engine)}
+    and block_size = {block_size_literal}
+    and iodepth = {iodepth}
+    and numjobs = {numjobs}
+  order by
+    case
+      when coalesce(durability_mode, 'none') = 'none' then 0
+      when durability_mode = 'fsync' then 1
+      when durability_mode = 'fdatasync' then 2
+      else 9
+    end,
+    coalesce(durability_every_ops, 0)
+  "))
+  print(metric_box(
+    df,
+    x = "durability_label",
+    y = "metric_value",
+    provider = provider,
+    fill = "durability_label",
+    title = title,
+    ylab = ylab,
+    ncol = 1,
     y_zero = y_zero
   ))
   cat("\n\n")
@@ -747,6 +860,12 @@ provider_resolved_config <- function(provider) {
       "latency_reference_block_size",
       "latency_reference_iodepth",
       "latency_reference_numjobs",
+      "durability_reference_io_engine",
+      "durability_reference_block_size",
+      "durability_reference_iodepth",
+      "durability_reference_numjobs",
+      "reference_durability_mode",
+      "reference_durability_every_ops",
       "psync_iodepth",
       "psync_numjobs",
       "available_filesystems"
@@ -772,6 +891,12 @@ provider_resolved_config <- function(provider) {
       cfg$latency_reference_block_size,
       cfg$latency_reference_iodepth,
       cfg$latency_reference_numjobs,
+      cfg$durability_reference_io_engine,
+      cfg$durability_reference_block_size,
+      cfg$durability_reference_iodepth,
+      cfg$durability_reference_numjobs,
+      cfg$reference_durability_mode,
+      cfg$reference_durability_every_ops,
       cfg$psync_iodepth,
       cfg$psync_numjobs,
       paste(cfg$filesystem_levels, collapse = ", ")
@@ -806,9 +931,9 @@ for (provider in providers) {
   select
     (select count(*) from scenarios where provider = {provider_literal}) as scenarios,
     (select count(*) from benchmarks where provider = {provider_literal}) as benchmark_rows,
-    (select count(*) from fio where provider = {provider_literal}) as fio_rows,
+    (select count(*) from fio_all where provider = {provider_literal}) as fio_rows,
     (select count(*) from failures where provider = {provider_literal}) as failures,
-    (select sum(case when valid_measurement then 1 else 0 end) from fio where provider = {provider_literal}) as valid_fio_rows
+    (select sum(case when valid_measurement then 1 else 0 end) from fio_all where provider = {provider_literal}) as valid_fio_rows
   ")
   emit_table(coverage_counts, sprintf("%s parsed storage benchmark data", label))
 
@@ -833,12 +958,13 @@ for (provider in providers) {
   select benchmark_machine_type, block_volume_performance_class, block_volume_type, block_volume_iops, block_volume_throughput_mbps,
          storage_target, storage_target_filesystem,
          benchmark_rw_mode, io_engine, block_size, iodepth, numjobs,
+         durability_mode, durability_every_ops,
          iodepth * numjobs as effective_concurrency,
          sum(case when valid_measurement then 1 else 0 end) as valid_repetitions
-  from fio
+  from fio_all
   where provider = {provider_literal}
-  group by 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13
-  order by 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13
+  group by 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15
+  order by 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15
   ")
   emit_table(dimension_coverage, sprintf("%s coverage by explicit analysis dimensions", label), provider = provider)
 
@@ -1022,6 +1148,19 @@ for (provider in providers) {
   emit_heading(4, "Local Storage")
   render_filesystem_plot(provider, "local", "primary_bw_bytes_per_sec / 1024.0 / 1024.0", sprintf("%s local storage throughput by filesystem", label), "Throughput (MiB/s)", cfg$throughput_reference_block_size, cfg$throughput_reference_iodepth, cfg$throughput_reference_io_engine, cfg$throughput_reference_numjobs)
 
+  emit_heading(3, "Durability Impact")
+  cat(sprintf(
+    "Durability impact is rendered for write workloads only. These plots keep provider, machine type, performance class, filesystem, and OS tuning fixed and compare `none`, `fsync/N`, and `fdatasync/N` using io_engine = %s, block_size = %s, iodepth = %s, numjobs = %s.\n\n",
+    cfg$durability_reference_io_engine,
+    cfg$durability_reference_block_size,
+    cfg$durability_reference_iodepth,
+    cfg$durability_reference_numjobs
+  ))
+  emit_heading(4, "Block Storage")
+  render_durability_plot(provider, "block", "primary_bw_bytes_per_sec / 1024.0 / 1024.0", sprintf("%s block storage throughput by durability", label), "Throughput (MiB/s)", cfg$durability_reference_block_size, cfg$durability_reference_iodepth, cfg$durability_reference_io_engine, cfg$durability_reference_numjobs)
+  emit_heading(4, "Local Storage")
+  render_durability_plot(provider, "local", "primary_bw_bytes_per_sec / 1024.0 / 1024.0", sprintf("%s local storage throughput by durability", label), "Throughput (MiB/s)", cfg$durability_reference_block_size, cfg$durability_reference_iodepth, cfg$durability_reference_io_engine, cfg$durability_reference_numjobs)
+
   emit_heading(2, "IOPS")
   cat("IOPS is reported using `primary_iops`. ", filter_text(provider, "iops"), "\n\n", sep = "")
 
@@ -1193,6 +1332,12 @@ for (provider in providers) {
   render_filesystem_plot(provider, "block", "primary_iops", sprintf("%s block storage IOPS by filesystem", label), "IOPS", cfg$iops_reference_block_size, cfg$iops_reference_iodepth, cfg$iops_reference_io_engine, cfg$iops_reference_numjobs)
   emit_heading(4, "Local Storage")
   render_filesystem_plot(provider, "local", "primary_iops", sprintf("%s local storage IOPS by filesystem", label), "IOPS", cfg$iops_reference_block_size, cfg$iops_reference_iodepth, cfg$iops_reference_io_engine, cfg$iops_reference_numjobs)
+
+  emit_heading(3, "Durability Impact")
+  emit_heading(4, "Block Storage")
+  render_durability_plot(provider, "block", "primary_iops", sprintf("%s block storage IOPS by durability", label), "IOPS", cfg$durability_reference_block_size, cfg$durability_reference_iodepth, cfg$durability_reference_io_engine, cfg$durability_reference_numjobs)
+  emit_heading(4, "Local Storage")
+  render_durability_plot(provider, "local", "primary_iops", sprintf("%s local storage IOPS by durability", label), "IOPS", cfg$durability_reference_block_size, cfg$durability_reference_iodepth, cfg$durability_reference_io_engine, cfg$durability_reference_numjobs)
 
   emit_heading(2, "Latency")
   cat("Latency is reported in microseconds. ", filter_text(provider, "latency"), "\n\n", sep = "")
@@ -1612,6 +1757,18 @@ for (provider in providers) {
   render_filesystem_plot(provider, "local", "primary_clat_p99_ns / 1000.0", sprintf("%s local storage P99 latency by filesystem", label), "P99 latency (us)", cfg$latency_reference_block_size, cfg$latency_reference_iodepth, cfg$latency_reference_io_engine, cfg$latency_reference_numjobs, y_zero = FALSE)
   render_filesystem_plot(provider, "local", "primary_clat_p50_ns / 1000.0", sprintf("%s local storage P50 latency by filesystem", label), "P50 latency (us)", cfg$latency_reference_block_size, cfg$latency_reference_iodepth, cfg$latency_reference_io_engine, cfg$latency_reference_numjobs, y_zero = FALSE)
 
+  emit_heading(3, "Durability Impact")
+  emit_heading(4, "Block Storage")
+  emit_heading(5, "P99")
+  render_durability_plot(provider, "block", "primary_clat_p99_ns / 1000.0", sprintf("%s block storage P99 latency by durability", label), "P99 latency (us)", cfg$durability_reference_block_size, cfg$durability_reference_iodepth, cfg$durability_reference_io_engine, cfg$durability_reference_numjobs, y_zero = FALSE)
+  emit_heading(5, "P50")
+  render_durability_plot(provider, "block", "primary_clat_p50_ns / 1000.0", sprintf("%s block storage P50 latency by durability", label), "P50 latency (us)", cfg$durability_reference_block_size, cfg$durability_reference_iodepth, cfg$durability_reference_io_engine, cfg$durability_reference_numjobs, y_zero = FALSE)
+  emit_heading(4, "Local Storage")
+  emit_heading(5, "P99")
+  render_durability_plot(provider, "local", "primary_clat_p99_ns / 1000.0", sprintf("%s local storage P99 latency by durability", label), "P99 latency (us)", cfg$durability_reference_block_size, cfg$durability_reference_iodepth, cfg$durability_reference_io_engine, cfg$durability_reference_numjobs, y_zero = FALSE)
+  emit_heading(5, "P50")
+  render_durability_plot(provider, "local", "primary_clat_p50_ns / 1000.0", sprintf("%s local storage P50 latency by durability", label), "P50 latency (us)", cfg$durability_reference_block_size, cfg$durability_reference_iodepth, cfg$durability_reference_io_engine, cfg$durability_reference_numjobs, y_zero = FALSE)
+
   emit_heading(2, "OS Tuning Coverage")
   tuning_coverage <- provider_query(provider, "
   select os_tuning, count(*) as repetitions
@@ -1645,13 +1802,14 @@ if (nrow(failure_table) == 0) {
 local_summary <- sql("
 select provider, benchmark_machine_type, block_volume_performance_class, storage_target,
        storage_target_filesystem, benchmark_rw_mode, io_engine, block_size, iodepth, numjobs,
+       durability_mode, durability_every_ops,
        iodepth * numjobs as effective_concurrency,
        sum(case when valid_measurement then 1 else 0 end) as valid_repetitions,
        sum(case when not valid_measurement then 1 else 0 end) as invalid_repetitions
-from fio
+from fio_all
 where storage_target = 'local'
-group by 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11
-order by 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11
+group by 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13
+order by 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13
 ")
 if (nrow(local_summary) == 0) {
   cat("No local-target measurements were parsed.")

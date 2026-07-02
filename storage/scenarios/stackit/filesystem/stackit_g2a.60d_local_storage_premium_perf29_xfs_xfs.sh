@@ -3,8 +3,8 @@
 # shellcheck disable=SC1091
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/../block-storage/common.inc"
 
-SCENARIO_NAME=stackit_g2a.120d_local_storage_premium_perf29_xfs_xfs
-BENCHMARK_MACHINE_TYPE=g2a.120d
+SCENARIO_NAME=stackit_g2a.60d_local_storage_premium_perf29_xfs_xfs
+BENCHMARK_MACHINE_TYPE=g2a.60d
 BLOCK_VOLUME_PERFORMANCE_CLASS=storage_premium_perf29
 LOCAL_FILESYSTEM=xfs
 BLOCK_FILESYSTEM=xfs

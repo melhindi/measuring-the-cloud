@@ -66,6 +66,12 @@ select
   sum(case when storage_target = 'block' and (storage_target_filesystem is null or storage_target_filesystem = '') then 1 else 0 end) as block_missing_target_filesystem,
   sum(case when access_pattern not in ('random', 'sequential') then 1 else 0 end) as bad_access_pattern,
   sum(case when direction not in ('read', 'write') then 1 else 0 end) as bad_direction,
+  sum(case when durability_mode not in ('none', 'fsync', 'fdatasync') then 1 else 0 end) as bad_durability_mode,
+  sum(case when coalesce(fio_fsync, 0) < 0 or coalesce(fio_fdatasync, 0) < 0 or coalesce(durability_every_ops, 0) < 0 then 1 else 0 end) as negative_durability_values,
+  sum(case when coalesce(fio_fsync, 0) > 0 and coalesce(fio_fdatasync, 0) > 0 then 1 else 0 end) as conflicting_durability_modes,
+  sum(case when durability_mode = 'none' and coalesce(durability_every_ops, 0) <> 0 then 1 else 0 end) as bad_none_durability_every_ops,
+  sum(case when durability_mode = 'fsync' and (coalesce(fio_fsync, 0) <= 0 or coalesce(fio_fdatasync, 0) <> 0 or coalesce(durability_every_ops, 0) <> coalesce(fio_fsync, 0)) then 1 else 0 end) as bad_fsync_durability_rows,
+  sum(case when durability_mode = 'fdatasync' and (coalesce(fio_fdatasync, 0) <= 0 or coalesce(fio_fsync, 0) <> 0 or coalesce(durability_every_ops, 0) <> coalesce(fio_fdatasync, 0)) then 1 else 0 end) as bad_fdatasync_durability_rows,
   sum(case when valid_measurement and coalesce(fio_error, 0) <> 0 then 1 else 0 end) as valid_with_error,
   sum(case when not valid_measurement and coalesce(fio_error, 0) = 0 then 1 else 0 end) as invalid_without_error
 from fio
@@ -76,6 +82,12 @@ stop_if_not(field_checks$local_missing_target_filesystem == 0, "Some local fio r
 stop_if_not(field_checks$block_missing_target_filesystem == 0, "Some block fio rows are missing storage_target_filesystem")
 stop_if_not(field_checks$bad_access_pattern == 0, "Unexpected access_pattern values in fio CSV")
 stop_if_not(field_checks$bad_direction == 0, "Unexpected direction values in fio CSV")
+stop_if_not(field_checks$bad_durability_mode == 0, "Unexpected durability_mode values in fio CSV")
+stop_if_not(field_checks$negative_durability_values == 0, "Negative durability values were parsed from fio CSV")
+stop_if_not(field_checks$conflicting_durability_modes == 0, "Some fio rows set both fsync and fdatasync")
+stop_if_not(field_checks$bad_none_durability_every_ops == 0, "Some non-durable fio rows have non-zero durability_every_ops")
+stop_if_not(field_checks$bad_fsync_durability_rows == 0, "Some fsync rows do not agree with the parsed durability fields")
+stop_if_not(field_checks$bad_fdatasync_durability_rows == 0, "Some fdatasync rows do not agree with the parsed durability fields")
 stop_if_not(field_checks$valid_with_error == 0, "Some valid fio rows still carry a non-zero error code")
 stop_if_not(field_checks$invalid_without_error == 0, "Some invalid fio rows have zero error code")
 
@@ -104,18 +116,20 @@ order by 1, 2, 3, 4, 5, 6, 7
 
 message("Benchmarks by target and workload")
 print(dbGetQuery(con, "
-select storage_target, storage_target_filesystem, benchmark_tool, benchmark_rw_mode, io_engine, block_size, count(*) as n
+select storage_target, storage_target_filesystem, benchmark_tool, benchmark_rw_mode, io_engine, block_size,
+       durability_mode, durability_every_ops, count(*) as n
 from benchmarks
-group by 1, 2, 3, 4, 5, 6
-order by 1, 2, 3, 4, 5, 6
+group by 1, 2, 3, 4, 5, 6, 7, 8
+order by 1, 2, 3, 4, 5, 6, 7, 8
 "))
 
 message("Valid fio measurements")
 print(dbGetQuery(con, "
-select storage_target, storage_target_filesystem, benchmark_rw_mode, io_engine, block_size, valid_measurement, count(*) as n
+select storage_target, storage_target_filesystem, benchmark_rw_mode, io_engine, block_size,
+       durability_mode, durability_every_ops, valid_measurement, count(*) as n
 from fio
-group by 1, 2, 3, 4, 5, 6
-order by 1, 2, 3, 4, 5, 6
+group by 1, 2, 3, 4, 5, 6, 7, 8
+order by 1, 2, 3, 4, 5, 6, 7, 8
 "))
 
 message("Throughput and latency by target")

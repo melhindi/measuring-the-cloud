@@ -246,6 +246,21 @@ percentile_value <- function(clat, pct_key) {
   to_num(scalar_value(pct[[pct_key]]))
 }
 
+durability_mode_from_counts <- function(fsync_count, fdatasync_count) {
+  fsync_count <- to_num(fsync_count)
+  fdatasync_count <- to_num(fdatasync_count)
+  if (!is.na(fsync_count) && fsync_count > 0) return("fsync")
+  if (!is.na(fdatasync_count) && fdatasync_count > 0) return("fdatasync")
+  "none"
+}
+
+durability_every_ops_from_counts <- function(fsync_count, fdatasync_count) {
+  mode <- durability_mode_from_counts(fsync_count, fdatasync_count)
+  if (identical(mode, "fsync")) return(to_num(fsync_count))
+  if (identical(mode, "fdatasync")) return(to_num(fdatasync_count))
+  0
+}
+
 scenario_fields <- c(
   "run_id", "scenario_name", "provider", "access_mode", "os_tuning", "benchmark_host",
   "benchmark_private_ip", "ssh_user", "benchmark_cpu_list", "benchmark_machine_type",
@@ -262,7 +277,8 @@ benchmark_fields <- c(
   "storage_target_device", "storage_target_filesystem", "benchmark_tool",
   "benchmark_rw_mode", "access_pattern", "direction",
   "io_engine", "block_size", "block_size_bytes", "iodepth", "numjobs", "runtime_sec", "direct",
-  "group_reporting", "time_based", "fio_size", "repetitions_expected", "cooldown_sec"
+  "group_reporting", "time_based", "fio_size", "fio_fsync", "fio_fdatasync",
+  "durability_mode", "durability_every_ops", "repetitions_expected", "cooldown_sec"
 )
 
 fio_fields <- c(
@@ -415,6 +431,16 @@ benchmark_row <- function(run_id, scenario_name, scenario_env, storage_env, benc
     group_reporting = to_num(env_get(benchmark_env, "FIO_GROUP_REPORTING")),
     time_based = to_num(env_get(benchmark_env, "FIO_TIME_BASED")),
     fio_size = env_get(benchmark_env, "FIO_SIZE"),
+    fio_fsync = to_num(env_get(benchmark_env, "FIO_FSYNC", "0")),
+    fio_fdatasync = to_num(env_get(benchmark_env, "FIO_FDATASYNC", "0")),
+    durability_mode = durability_mode_from_counts(
+      env_get(benchmark_env, "FIO_FSYNC", "0"),
+      env_get(benchmark_env, "FIO_FDATASYNC", "0")
+    ),
+    durability_every_ops = durability_every_ops_from_counts(
+      env_get(benchmark_env, "FIO_FSYNC", "0"),
+      env_get(benchmark_env, "FIO_FDATASYNC", "0")
+    ),
     repetitions_expected = to_num(env_get(benchmark_env, "REPETITIONS")),
     cooldown_sec = to_num(env_get(benchmark_env, "COOLDOWN_SEC")),
     benchmark_dir = benchmark_dir,
