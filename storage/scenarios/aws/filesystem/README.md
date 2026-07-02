@@ -5,7 +5,8 @@ storage benchmarks while the broader AWS scenario matrix continues to cover the
 `raw` path.
 
 The representative scenarios use the largest local-storage shape and the
-highest gp3 profile already modeled in the repo, with `xfs` as the aligned
+highest gp3 profile already modeled in the repo, named explicitly as
+`gp3_16000iops_1000mbps`, with `xfs` as the aligned
 filesystem-backed choice for PostgreSQL-oriented runs. Filesystem coverage is
 consolidated into combined scenarios that benchmark both the local
 instance-store target and the attached gp3 target on the same VM:

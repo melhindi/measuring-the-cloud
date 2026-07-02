@@ -1,7 +1,7 @@
 # AWS Full Storage Matrix
 
 This folder contains the broader AWS block-storage matrix. It combines
-approximate compute pairings with gp3 profiles:
+approximate compute pairings with explicit gp3 profiles:
 
 ```text
 STACKIT g2a.8d    AWS c6id.2xlarge
@@ -9,8 +9,9 @@ STACKIT g2a.30d   AWS c6id.8xlarge
 STACKIT g2a.120d  AWS c6id.32xlarge
 ```
 
-The gp3 profile names mirror the STACKIT performance-class labels for
-benchmark pairing only.
+AWS scenario filenames in this folder use the explicit
+`gp3_<iops>iops_<throughput>mbps` form instead of the older mirrored `perf*`
+shorthand.
 
 Like the comparable STACKIT matrix, these scenarios use the full benchmark
 suite from `storage/benchmarks/full`.

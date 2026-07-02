@@ -141,6 +141,10 @@ STACKIT storage_premium_perf21  AWS gp3 10000 IOPS /  500 MiB/s
 STACKIT storage_premium_perf29  AWS gp3 16000 IOPS / 1000 MiB/s
 ```
 
+AWS scenario filenames use the explicit `gp3_<iops>iops_<throughput>mbps`
+form, for example
+`aws_c6id.2xlarge_storage_gp3_3000iops_125mbps_standard.sh`.
+
 In the storage analysis and reports, this shared comparison axis is still
 called `Performance Class`. For AWS, the displayed value is derived from the
 scenario's declared EBS inputs, for example `gp3 (3000 IOPS | 125 MiB/s)`.

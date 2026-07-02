@@ -136,6 +136,10 @@ volume performance class. Storage scenarios can also set
 `LOCAL_FILESYSTEM` and `BLOCK_FILESYSTEM` to make target configuration
 explicit; both support `ext4`, `xfs`, and `raw`.
 
+AWS storage scenario filenames use explicit gp3 profile naming, for example
+`aws_c6id.2xlarge_storage_gp3_3000iops_125mbps_standard.sh`, while STACKIT
+storage scenarios keep the native `storage_premium_perf*` naming.
+
 Set `SKIP=1` to keep a scenario file in the directory without running it.
 
 ## OpenTofu Files
