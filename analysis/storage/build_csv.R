@@ -136,6 +136,68 @@ derive_block_volume_performance_class <- function(scenario_name, benchmark_machi
   NA_character_
 }
 
+stackit_block_profile_details <- function(perf_class) {
+  if (is.na(perf_class) || !nzchar(perf_class)) {
+    return(list(type = NA_character_, iops = NA_real_, throughput_mbps = NA_real_))
+  }
+  profile_map <- list(
+    storage_premium_perf0 = list(type = "stackit-block", iops = 120, throughput_mbps = 25),
+    storage_premium_perf1 = list(type = "stackit-block", iops = 500, throughput_mbps = 50),
+    storage_premium_perf2 = list(type = "stackit-block", iops = 1000, throughput_mbps = 100),
+    storage_premium_perf4 = list(type = "stackit-block", iops = 2000, throughput_mbps = 150),
+    storage_premium_perf6 = list(type = "stackit-block", iops = 5000, throughput_mbps = 200),
+    storage_premium_perf8 = list(type = "stackit-block", iops = 10000, throughput_mbps = 250),
+    storage_premium_perf10 = list(type = "stackit-block", iops = 15000, throughput_mbps = 300),
+    storage_premium_perf12 = list(type = "stackit-block", iops = 20000, throughput_mbps = 350),
+    storage_premium_perf13 = list(type = "stackit-block", iops = 20000, throughput_mbps = 700),
+    storage_premium_perf14 = list(type = "stackit-block", iops = 25000, throughput_mbps = 400),
+    storage_premium_perf15 = list(type = "stackit-block", iops = 25000, throughput_mbps = 800),
+    storage_premium_perf16 = list(type = "stackit-block", iops = 30000, throughput_mbps = 450),
+    storage_premium_perf17 = list(type = "stackit-block", iops = 30000, throughput_mbps = 900),
+    storage_premium_perf18 = list(type = "stackit-block", iops = 35000, throughput_mbps = 500),
+    storage_premium_perf19 = list(type = "stackit-block", iops = 35000, throughput_mbps = 1000),
+    storage_premium_perf20 = list(type = "stackit-block", iops = 40000, throughput_mbps = 550),
+    storage_premium_perf21 = list(type = "stackit-block", iops = 40000, throughput_mbps = 1100),
+    storage_premium_perf29 = list(type = "stackit-block", iops = 60000, throughput_mbps = 1500)
+  )
+  profile_map[[perf_class]] %||% list(type = "stackit-block", iops = NA_real_, throughput_mbps = NA_real_)
+}
+
+block_profile_metadata <- function(provider, scenario_env, perf_class) {
+  if (identical(provider, "aws")) {
+    scenario_name <- env_get(scenario_env, "SCENARIO_NAME")
+    if (!exists(".scenario_source_cache", envir = .GlobalEnv, inherits = FALSE)) {
+      assign(".scenario_source_cache", new.env(parent = emptyenv()), envir = .GlobalEnv)
+    }
+    scenario_source_cache <- get(".scenario_source_cache", envir = .GlobalEnv, inherits = FALSE)
+    if (!is.na(scenario_name) && nzchar(scenario_name)) {
+      if (!exists(scenario_name, envir = scenario_source_cache, inherits = FALSE)) {
+        scenario_path <- Sys.glob(file.path(repo_root, "storage", "scenarios", "aws", "*", paste0(scenario_name, ".sh")))
+        scenario_env_from_source <- if (length(scenario_path) > 0) {
+          read_env_file(scenario_path[[1]])
+        } else {
+          setNames(character(0), character(0))
+        }
+        assign(scenario_name, scenario_env_from_source, envir = scenario_source_cache)
+      }
+      scenario_source_env <- get(scenario_name, envir = scenario_source_cache, inherits = FALSE)
+      scenario_env <- c(scenario_env, scenario_source_env[setdiff(names(scenario_source_env), names(scenario_env))])
+      if (length(scenario_source_env) > 0) {
+        scenario_env[names(scenario_source_env)] <- scenario_source_env
+      }
+    }
+    return(list(
+      type = env_get(scenario_env, "BLOCK_VOLUME_TYPE"),
+      iops = to_num(env_get(scenario_env, "BLOCK_VOLUME_IOPS")),
+      throughput_mbps = to_num(env_get(scenario_env, "BLOCK_VOLUME_THROUGHPUT_MBPS"))
+    ))
+  }
+  if (identical(provider, "stackit")) {
+    return(stackit_block_profile_details(perf_class))
+  }
+  list(type = NA_character_, iops = NA_real_, throughput_mbps = NA_real_)
+}
+
 access_pattern_for_rw <- function(rw) {
   if (grepl("^rand", rw)) return("random")
   if (rw %in% c("read", "write")) return("sequential")
@@ -187,7 +249,8 @@ percentile_value <- function(clat, pct_key) {
 scenario_fields <- c(
   "run_id", "scenario_name", "provider", "access_mode", "os_tuning", "benchmark_host",
   "benchmark_private_ip", "ssh_user", "benchmark_cpu_list", "benchmark_machine_type",
-  "benchmark_availability_zone", "block_volume_performance_class", "storage_targets_raw", "storage_root_device",
+  "benchmark_availability_zone", "block_volume_performance_class", "block_volume_type",
+  "block_volume_iops", "block_volume_throughput_mbps", "storage_targets_raw", "storage_root_device",
   "storage_local_device", "storage_local_mount", "storage_local_filesystem",
   "storage_block_device", "storage_block_mount", "storage_block_filesystem",
   "scenario_source_file", "storage_env_file"
@@ -230,9 +293,15 @@ failure_fields <- c(
 )
 
 scenario_row <- function(run_id, scenario_name, scenario_env, storage_env, scenario_dir) {
+  provider <- detect_provider(scenario_name)
   storage_targets <- env_get(scenario_env, "STORAGE_TARGETS", env_get(storage_env, "STORAGE_TARGETS"))
   storage_local_mount <- env_get(scenario_env, "STORAGE_LOCAL_MOUNT", env_get(storage_env, "STORAGE_LOCAL_MOUNT"))
   storage_block_mount <- env_get(scenario_env, "STORAGE_BLOCK_MOUNT", env_get(storage_env, "STORAGE_BLOCK_MOUNT"))
+  block_perf_class <- derive_block_volume_performance_class(
+    scenario_name,
+    env_get(scenario_env, "BENCHMARK_MACHINE_TYPE")
+  )
+  block_profile <- block_profile_metadata(provider, scenario_env, block_perf_class)
   storage_local_filesystem <- infer_storage_filesystem(
     env_get(scenario_env, "STORAGE_LOCAL_FILESYSTEM", env_get(storage_env, "STORAGE_LOCAL_FILESYSTEM")),
     scenario_name,
@@ -246,7 +315,7 @@ scenario_row <- function(run_id, scenario_name, scenario_env, storage_env, scena
   data.frame(
     run_id = run_id,
     scenario_name = scenario_name,
-    provider = detect_provider(scenario_name),
+    provider = provider,
     access_mode = env_get(scenario_env, "ACCESS_MODE"),
     os_tuning = env_get(scenario_env, "OS_TUNING"),
     benchmark_host = env_get(scenario_env, "BENCHMARK_HOST"),
@@ -255,10 +324,10 @@ scenario_row <- function(run_id, scenario_name, scenario_env, storage_env, scena
     benchmark_cpu_list = env_get(scenario_env, "BENCHMARK_CPU_LIST"),
     benchmark_machine_type = env_get(scenario_env, "BENCHMARK_MACHINE_TYPE"),
     benchmark_availability_zone = env_get(scenario_env, "BENCHMARK_AVAILABILITY_ZONE"),
-    block_volume_performance_class = derive_block_volume_performance_class(
-      scenario_name,
-      env_get(scenario_env, "BENCHMARK_MACHINE_TYPE")
-    ),
+    block_volume_performance_class = block_perf_class,
+    block_volume_type = scalar_char(block_profile$type),
+    block_volume_iops = scalar_num(block_profile$iops),
+    block_volume_throughput_mbps = scalar_num(block_profile$throughput_mbps),
     storage_targets_raw = storage_targets,
     storage_root_device = env_get(scenario_env, "STORAGE_ROOT_DEVICE", env_get(storage_env, "STORAGE_ROOT_DEVICE")),
     storage_local_device = env_get(scenario_env, "STORAGE_LOCAL_DEVICE", env_get(storage_env, "STORAGE_LOCAL_DEVICE")),
@@ -275,8 +344,14 @@ scenario_row <- function(run_id, scenario_name, scenario_env, storage_env, scena
 
 benchmark_row <- function(run_id, scenario_name, scenario_env, storage_env, benchmark_name, storage_target, benchmark_env, benchmark_dir, scenario_dir) {
   rw_mode <- env_get(benchmark_env, "FIO_RW")
+  provider <- detect_provider(scenario_name)
   storage_local_mount <- env_get(scenario_env, "STORAGE_LOCAL_MOUNT", env_get(storage_env, "STORAGE_LOCAL_MOUNT"))
   storage_block_mount <- env_get(scenario_env, "STORAGE_BLOCK_MOUNT", env_get(storage_env, "STORAGE_BLOCK_MOUNT"))
+  block_perf_class <- derive_block_volume_performance_class(
+    scenario_name,
+    env_get(scenario_env, "BENCHMARK_MACHINE_TYPE")
+  )
+  block_profile <- block_profile_metadata(provider, scenario_env, block_perf_class)
   storage_local_filesystem <- infer_storage_filesystem(
     env_get(scenario_env, "STORAGE_LOCAL_FILESYSTEM", env_get(storage_env, "STORAGE_LOCAL_FILESYSTEM")),
     scenario_name,
@@ -297,7 +372,7 @@ benchmark_row <- function(run_id, scenario_name, scenario_env, storage_env, benc
   data.frame(
     run_id = run_id,
     scenario_name = scenario_name,
-    provider = detect_provider(scenario_name),
+    provider = provider,
     access_mode = env_get(scenario_env, "ACCESS_MODE"),
     os_tuning = env_get(benchmark_env, "OS_TUNING", env_get(scenario_env, "OS_TUNING")),
     benchmark_host = env_get(scenario_env, "BENCHMARK_HOST"),
@@ -306,10 +381,10 @@ benchmark_row <- function(run_id, scenario_name, scenario_env, storage_env, benc
     benchmark_cpu_list = env_get(benchmark_env, "BENCHMARK_CPU_LIST", env_get(scenario_env, "BENCHMARK_CPU_LIST")),
     benchmark_machine_type = env_get(scenario_env, "BENCHMARK_MACHINE_TYPE"),
     benchmark_availability_zone = env_get(scenario_env, "BENCHMARK_AVAILABILITY_ZONE"),
-    block_volume_performance_class = derive_block_volume_performance_class(
-      scenario_name,
-      env_get(scenario_env, "BENCHMARK_MACHINE_TYPE")
-    ),
+    block_volume_performance_class = block_perf_class,
+    block_volume_type = scalar_char(block_profile$type),
+    block_volume_iops = scalar_num(block_profile$iops),
+    block_volume_throughput_mbps = scalar_num(block_profile$throughput_mbps),
     storage_targets_raw = env_get(scenario_env, "STORAGE_TARGETS", env_get(storage_env, "STORAGE_TARGETS")),
     storage_root_device = env_get(scenario_env, "STORAGE_ROOT_DEVICE", env_get(storage_env, "STORAGE_ROOT_DEVICE")),
     storage_local_device = env_get(scenario_env, "STORAGE_LOCAL_DEVICE", env_get(storage_env, "STORAGE_LOCAL_DEVICE")),

@@ -294,8 +294,96 @@ where block_volume_performance_class is not null
 order by block_volume_performance_class
 ")$block_volume_performance_class
 perf_class_order <- perf_class_order[order(as.integer(sub(".*perf([0-9]+).*", "\\1", perf_class_order)))]
+stackit_profile_iops <- c(
+  storage_premium_perf0 = 120,
+  storage_premium_perf1 = 500,
+  storage_premium_perf2 = 1000,
+  storage_premium_perf4 = 2000,
+  storage_premium_perf6 = 5000,
+  storage_premium_perf8 = 10000,
+  storage_premium_perf10 = 15000,
+  storage_premium_perf12 = 20000,
+  storage_premium_perf13 = 20000,
+  storage_premium_perf14 = 25000,
+  storage_premium_perf15 = 25000,
+  storage_premium_perf16 = 30000,
+  storage_premium_perf17 = 30000,
+  storage_premium_perf18 = 35000,
+  storage_premium_perf19 = 35000,
+  storage_premium_perf20 = 40000,
+  storage_premium_perf21 = 40000,
+  storage_premium_perf29 = 60000
+)
+stackit_profile_throughput_mbps <- c(
+  storage_premium_perf0 = 25,
+  storage_premium_perf1 = 50,
+  storage_premium_perf2 = 100,
+  storage_premium_perf4 = 150,
+  storage_premium_perf6 = 200,
+  storage_premium_perf8 = 250,
+  storage_premium_perf10 = 300,
+  storage_premium_perf12 = 350,
+  storage_premium_perf13 = 700,
+  storage_premium_perf14 = 400,
+  storage_premium_perf15 = 800,
+  storage_premium_perf16 = 450,
+  storage_premium_perf17 = 900,
+  storage_premium_perf18 = 500,
+  storage_premium_perf19 = 1000,
+  storage_premium_perf20 = 550,
+  storage_premium_perf21 = 1100,
+  storage_premium_perf29 = 1500
+)
+
+format_performance_class_value <- function(provider, perf_class, block_volume_type = NA, block_volume_iops = NA, block_volume_throughput_mbps = NA) {
+  perf_class <- as.character(perf_class %||% NA_character_)
+  if (is.na(perf_class) || !nzchar(perf_class)) return(NA_character_)
+  if (!identical(provider, "aws")) {
+    if (!is.na(block_volume_iops) && !is.na(block_volume_throughput_mbps)) {
+      return(sprintf("%s (%s IOPS | %s MiB/s)", perf_class, format(round(block_volume_iops, 0), big.mark = ","), format(round(block_volume_throughput_mbps, 0), big.mark = ",")))
+    }
+    return(perf_class)
+  }
+  if (is.na(block_volume_type) || !nzchar(as.character(block_volume_type)) || is.na(block_volume_iops) || is.na(block_volume_throughput_mbps)) {
+    return(perf_class)
+  }
+  sprintf("%s (%s IOPS | %s MiB/s)", as.character(block_volume_type), format(round(block_volume_iops, 0), big.mark = ","), format(round(block_volume_throughput_mbps, 0), big.mark = ","))
+}
+
+apply_performance_class_display <- function(df, provider = NULL) {
+  if (!("block_volume_performance_class" %in% names(df))) return(df)
+  provider_values <- if ("provider" %in% names(df)) as.character(df$provider) else rep_len(provider %||% NA_character_, nrow(df))
+  block_types <- if ("block_volume_type" %in% names(df)) df$block_volume_type else rep_len(NA_character_, nrow(df))
+  block_iops <- if ("block_volume_iops" %in% names(df)) df$block_volume_iops else rep_len(NA_real_, nrow(df))
+  block_throughput <- if ("block_volume_throughput_mbps" %in% names(df)) df$block_volume_throughput_mbps else rep_len(NA_real_, nrow(df))
+  df$block_volume_performance_class_raw <- as.character(df$block_volume_performance_class)
+  df$block_volume_performance_class <- vapply(
+    seq_len(nrow(df)),
+    function(i) format_performance_class_value(
+      provider = provider_values[[i]],
+      perf_class = df$block_volume_performance_class_raw[[i]],
+      block_volume_type = block_types[[i]],
+      block_volume_iops = block_iops[[i]],
+      block_volume_throughput_mbps = block_throughput[[i]]
+    ),
+    character(1)
+  )
+  df
+}
+
+display_perf_class_order <- vapply(
+  perf_class_order,
+  function(perf_class) format_performance_class_value(
+    "stackit",
+    perf_class,
+    block_volume_iops = unname(stackit_profile_iops[[perf_class]]),
+    block_volume_throughput_mbps = unname(stackit_profile_throughput_mbps[[perf_class]])
+  ),
+  character(1)
+)
 
 apply_factor_levels <- function(df, provider = NULL) {
+  df <- apply_performance_class_display(df, provider = provider)
   cfg <- if (!is.null(provider)) provider_configs[[provider]] else NULL
   machine_levels <- if (!is.null(cfg)) cfg$machine_levels else unique(c(
     report_config$preferred_machine_order,
@@ -325,7 +413,10 @@ apply_factor_levels <- function(df, provider = NULL) {
   if ("storage_target" %in% names(df)) df$storage_target <- factor(df$storage_target, levels = target_levels)
   if ("storage_target_filesystem" %in% names(df)) df$storage_target_filesystem <- factor(df$storage_target_filesystem, levels = filesystem_levels)
   if ("block_size" %in% names(df)) df$block_size <- factor(df$block_size, levels = block_size_levels)
-  if ("block_volume_performance_class" %in% names(df)) df$block_volume_performance_class <- factor(df$block_volume_performance_class, levels = perf_class_order)
+  if ("block_volume_performance_class" %in% names(df)) {
+    perf_levels <- unique(c(display_perf_class_order, as.character(df$block_volume_performance_class)))
+    df$block_volume_performance_class <- factor(df$block_volume_performance_class, levels = perf_levels)
+  }
   if ("latency_metric" %in% names(df)) df$latency_metric <- factor(df$latency_metric, levels = c("avg", "p50", "p99", "p99.9"))
   if ("execution_config" %in% names(df)) df$execution_config <- factor(df$execution_config, levels = unique(df$execution_config))
   df
@@ -485,13 +576,37 @@ emit_heading <- function(level, title) {
   cat(sprintf("%s %s\n\n", paste(rep("#", level), collapse = ""), title))
 }
 
-emit_table <- function(df, caption, empty_message = "No data is available for this section.") {
+emit_table <- function(df, caption, empty_message = "No data is available for this section.", provider = NULL) {
   if (nrow(df) == 0) {
     cat(empty_message, "\n\n")
   } else {
+    df <- apply_performance_class_display(df, provider = provider)
+    drop_cols <- intersect(c("block_volume_type", "block_volume_iops", "block_volume_throughput_mbps", "block_volume_performance_class_raw"), names(df))
+    if ("block_volume_performance_class" %in% names(df) && length(drop_cols) > 0) {
+      df <- df[, setdiff(names(df), drop_cols), drop = FALSE]
+    }
     print(knitr::kable(df, caption = caption))
     cat("\n\n")
   }
+}
+
+resolve_reference_perf_label <- function(provider, perf_class) {
+  if (is.null(perf_class) || is.na(perf_class) || !nzchar(perf_class)) return(NA_character_)
+  provider_literal <- quote_sql(provider)
+  perf_literal <- quote_sql(perf_class)
+  ref_df <- sql(glue::glue("
+  select provider, block_volume_performance_class, block_volume_type, block_volume_iops, block_volume_throughput_mbps
+  from fio
+  where provider = {provider_literal}
+    and block_volume_performance_class = {perf_literal}
+    and block_volume_performance_class is not null
+  limit 1
+  "))
+  if (nrow(ref_df) == 0) {
+    return(format_performance_class_value(provider, perf_class))
+  }
+  ref_df <- apply_performance_class_display(ref_df, provider = provider)
+  as.character(ref_df$block_volume_performance_class[[1]])
 }
 
 provider_query <- function(provider, query) {
@@ -501,23 +616,24 @@ provider_query <- function(provider, query) {
 
 filter_text <- function(provider, family) {
   cfg <- provider_configs[[provider]]
+  ref_perf_label <- resolve_reference_perf_label(provider, cfg$reference_block_performance_class)
   if (identical(family, "throughput")) {
     sprintf(
-      "Provider = %s, reference_machine_type = %s, os_tuning = %s, io_engine = %s, block_size = %s, iodepth = %s, numjobs = %s, reference block filesystem = %s, reference local filesystem = %s.",
-      provider_label(provider), cfg$reference_machine_type, cfg$reference_os_tuning, cfg$throughput_reference_io_engine,
+      "Provider = %s, reference_machine_type = %s, reference performance class = %s, os_tuning = %s, io_engine = %s, block_size = %s, iodepth = %s, numjobs = %s, reference block filesystem = %s, reference local filesystem = %s.",
+      provider_label(provider), cfg$reference_machine_type, ref_perf_label, cfg$reference_os_tuning, cfg$throughput_reference_io_engine,
       cfg$throughput_reference_block_size, cfg$throughput_reference_iodepth, cfg$throughput_reference_numjobs,
       cfg$reference_block_filesystem, cfg$reference_local_filesystem
     )
   } else if (identical(family, "iops")) {
     sprintf(
-      "Provider = %s, reference_machine_type = %s, os_tuning = %s, block_size = %s, io_engine = %s, iodepth = %s, numjobs = %s, reference block filesystem = %s, reference local filesystem = %s.",
-      provider_label(provider), cfg$reference_machine_type, cfg$reference_os_tuning, cfg$iops_reference_block_size, cfg$iops_reference_io_engine,
+      "Provider = %s, reference_machine_type = %s, reference performance class = %s, os_tuning = %s, block_size = %s, io_engine = %s, iodepth = %s, numjobs = %s, reference block filesystem = %s, reference local filesystem = %s.",
+      provider_label(provider), cfg$reference_machine_type, ref_perf_label, cfg$reference_os_tuning, cfg$iops_reference_block_size, cfg$iops_reference_io_engine,
       cfg$iops_reference_iodepth, cfg$iops_reference_numjobs, cfg$reference_block_filesystem, cfg$reference_local_filesystem
     )
   } else {
     sprintf(
-      "Provider = %s, reference_machine_type = %s, os_tuning = %s, block_size = %s, io_engine = %s, iodepth = %s, numjobs = %s, reference block filesystem = %s, reference local filesystem = %s.",
-      provider_label(provider), cfg$reference_machine_type, cfg$reference_os_tuning, cfg$latency_reference_block_size, cfg$latency_reference_io_engine,
+      "Provider = %s, reference_machine_type = %s, reference performance class = %s, os_tuning = %s, block_size = %s, io_engine = %s, iodepth = %s, numjobs = %s, reference block filesystem = %s, reference local filesystem = %s.",
+      provider_label(provider), cfg$reference_machine_type, ref_perf_label, cfg$reference_os_tuning, cfg$latency_reference_block_size, cfg$latency_reference_io_engine,
       cfg$latency_reference_iodepth, cfg$latency_reference_numjobs, cfg$reference_block_filesystem, cfg$reference_local_filesystem
     )
   }
@@ -539,6 +655,7 @@ render_performance_class_plots_provider <- function(provider, metric_expression,
     block_size_literal <- quote_sql(block_size_value)
     df <- provider_query(provider, glue::glue("
     select block_volume_performance_class, benchmark_rw_mode,
+           block_volume_type, block_volume_iops, block_volume_throughput_mbps,
            {metric_expression} as metric_value
     from fio
     where provider = {provider_literal}
@@ -636,9 +753,9 @@ provider_resolved_config <- function(provider) {
     ),
     value = c(
       cfg$reference_machine_type,
-      cfg$instance_comparison_block_performance_class,
-      cfg$local_instance_comparison_block_performance_class,
-      cfg$reference_block_performance_class,
+      resolve_reference_perf_label(provider, cfg$instance_comparison_block_performance_class),
+      resolve_reference_perf_label(provider, cfg$local_instance_comparison_block_performance_class),
+      resolve_reference_perf_label(provider, cfg$reference_block_performance_class),
       cfg$reference_block_filesystem,
       cfg$reference_local_filesystem,
       cfg$reference_os_tuning,
@@ -697,30 +814,33 @@ for (provider in providers) {
 
   emit_table(
     provider_resolved_config(provider),
-    sprintf("%s resolved report configuration", label)
+    sprintf("%s resolved report configuration", label),
+    provider = provider
   )
 
   scenario_table <- provider_query(provider, "
   select run_id, scenario_name, benchmark_machine_type, benchmark_availability_zone,
          os_tuning, access_mode, storage_targets_raw,
-         storage_local_filesystem, storage_block_filesystem, block_volume_performance_class
+         storage_local_filesystem, storage_block_filesystem, block_volume_performance_class,
+         block_volume_type, block_volume_iops, block_volume_throughput_mbps
   from scenarios
   where provider = {provider_literal}
   order by run_id, scenario_name
   ")
-  emit_table(scenario_table, sprintf("%s scenario coverage", label))
+  emit_table(scenario_table, sprintf("%s scenario coverage", label), provider = provider)
 
   dimension_coverage <- provider_query(provider, "
-  select benchmark_machine_type, block_volume_performance_class, storage_target, storage_target_filesystem,
+  select benchmark_machine_type, block_volume_performance_class, block_volume_type, block_volume_iops, block_volume_throughput_mbps,
+         storage_target, storage_target_filesystem,
          benchmark_rw_mode, io_engine, block_size, iodepth, numjobs,
          iodepth * numjobs as effective_concurrency,
          sum(case when valid_measurement then 1 else 0 end) as valid_repetitions
   from fio
   where provider = {provider_literal}
-  group by 1, 2, 3, 4, 5, 6, 7, 8, 9, 10
-  order by 1, 2, 3, 4, 5, 6, 7, 8, 9, 10
+  group by 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13
+  order by 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13
   ")
-  emit_table(dimension_coverage, sprintf("%s coverage by explicit analysis dimensions", label))
+  emit_table(dimension_coverage, sprintf("%s coverage by explicit analysis dimensions", label), provider = provider)
 
   emit_heading(2, "Throughput")
   cat("Throughput is reported as MiB/s using `primary_bw_bytes_per_sec`. ", filter_text(provider, "throughput"), "\n\n", sep = "")
@@ -1501,7 +1621,7 @@ for (provider in providers) {
   group by 1
   order by 1
   ")
-  emit_table(tuning_coverage, sprintf("%s OS tuning coverage in valid fio repetitions", label))
+  emit_table(tuning_coverage, sprintf("%s OS tuning coverage in valid fio repetitions", label), provider = provider)
 }
 ```
 

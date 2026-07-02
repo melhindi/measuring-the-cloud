@@ -141,6 +141,13 @@ STACKIT storage_premium_perf21  AWS gp3 10000 IOPS /  500 MiB/s
 STACKIT storage_premium_perf29  AWS gp3 16000 IOPS / 1000 MiB/s
 ```
 
+In the storage analysis and reports, this shared comparison axis is still
+called `Performance Class`. For AWS, the displayed value is derived from the
+scenario's declared EBS inputs, for example `gp3 (3000 IOPS | 125 MiB/s)`.
+For STACKIT, the displayed value keeps the native class name and appends the
+documented class characteristics, for example
+`storage_premium_perf12 (6000 IOPS | 250 MiB/s)`.
+
 Approximate instance pairings:
 
 ```text
