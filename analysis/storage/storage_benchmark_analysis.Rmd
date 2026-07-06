@@ -109,14 +109,14 @@ default_report_config <- list(
     iodepth = c(32, 16),
     stringsAsFactors = FALSE
   ),
-  preferred_machine_order = c("g2a.8d", "g2a.30d", "g2a.60d", "g2a.120d", "c6id.32xlarge", "c6id.metal"),
+  preferred_machine_order = c("g2a.60d", "g2a.30d", "g2a.8d", "g2a.120d", "c6id.metal", "c6id.32xlarge"),
   preferred_workload_order = c("randread", "randwrite", "read", "write"),
   preferred_engine_order = c("psync", "io_uring"),
   preferred_target_order = c("local", "block"),
   preferred_filesystem_order = c("raw", "xfs", "ext4"),
   provider_overrides = list(
     stackit = list(
-      reference_machine_type = "g2a.120d",
+      reference_machine_type = "g2a.60d",
       instance_comparison_block_performance_class = "storage_premium_perf12",
       local_instance_comparison_block_performance_class = "storage_premium_perf6",
       reference_block_performance_class = "storage_premium_perf29",
@@ -307,7 +307,12 @@ from scenarios
 where block_volume_performance_class is not null
 order by block_volume_performance_class
 ")$block_volume_performance_class
-perf_class_order <- perf_class_order[order(as.integer(sub(".*perf([0-9]+).*", "\\1", perf_class_order)))]
+perf_class_rank <- ifelse(
+  grepl("^storage_premium_perf[0-9]+$", perf_class_order),
+  as.integer(sub(".*perf([0-9]+).*", "\\1", perf_class_order)),
+  Inf
+)
+perf_class_order <- perf_class_order[order(perf_class_rank, perf_class_order)]
 stackit_profile_iops <- c(
   storage_premium_perf0 = 120,
   storage_premium_perf1 = 500,
@@ -390,8 +395,8 @@ display_perf_class_order <- vapply(
   function(perf_class) format_performance_class_value(
     "stackit",
     perf_class,
-    block_volume_iops = unname(stackit_profile_iops[[perf_class]]),
-    block_volume_throughput_mbps = unname(stackit_profile_throughput_mbps[[perf_class]])
+    block_volume_iops = if (perf_class %in% names(stackit_profile_iops)) unname(stackit_profile_iops[[perf_class]]) else NA_real_,
+    block_volume_throughput_mbps = if (perf_class %in% names(stackit_profile_throughput_mbps)) unname(stackit_profile_throughput_mbps[[perf_class]]) else NA_real_
   ),
   character(1)
 )
