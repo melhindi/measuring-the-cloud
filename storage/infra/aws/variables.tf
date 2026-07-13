@@ -19,7 +19,7 @@ variable "aws_profile" {
 variable "aws_availability_zone" {
   description = "AWS availability zone for benchmark instance and EBS volume"
   type        = string
-  default     = "eu-central-1c"
+  default     = "eu-central-1a"
 }
 
 variable "vpc_cidr" {

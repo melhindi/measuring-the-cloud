@@ -1,7 +1,7 @@
 # Copy to baseline.tfvars in this directory and adjust for your AWS account.
 
 aws_region            = "eu-central-1"
-aws_availability_zone = "eu-central-1c"
+aws_availability_zone = "eu-central-1a"
 aws_profile           = ""
 
 vpc_cidr    = "10.76.0.0/16"

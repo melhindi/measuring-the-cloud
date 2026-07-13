@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+log() {
+  echo "[cloud-measuring][$(date --iso-8601=seconds)] $*" | tee -a /var/log/cloud-measuring-user-data.log
+}
+
+export DEBIAN_FRONTEND=noninteractive
+
+apt-get update -y
+apt-get install -y openssh-client rsync jq util-linux iproute2 curl ca-certificates gnupg apt-transport-https
+
+curl --proto '=https' --tlsv1.2 -fsSL https://get.opentofu.org/install-opentofu.sh -o /tmp/install-opentofu.sh
+chmod +x /tmp/install-opentofu.sh
+/tmp/install-opentofu.sh --install-method deb
+rm -f /tmp/install-opentofu.sh
+
+mkdir -p /opt/cloud-measuring/{state,artifacts,bin,repo}
+chown -R ubuntu:ubuntu /opt/cloud-measuring
+
+cat >/opt/cloud-measuring/node.env <<EOF
+NODE_ROLE=${node_role}
+EOF
+chown ubuntu:ubuntu /opt/cloud-measuring/node.env
+
+log "benchmark runner bootstrap complete"

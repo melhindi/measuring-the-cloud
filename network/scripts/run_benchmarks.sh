@@ -11,6 +11,8 @@ BENCHMARK_DIR=""
 RUN_ID=""
 OS_TUNING="standard"
 INSTANCE_AFFINITY="none"
+SERVER_REGION=""
+PLACEMENT_MODE=""
 LOCAL_LOG_DIR=""
 REMOTE_RESULTS_ROOT="/opt/cloud-measuring/results"
 ACCESS_MODE="public"
@@ -18,7 +20,7 @@ declare -a BENCHMARK_NAMES=()
 
 usage() {
   cat >&2 <<USAGE
-usage: $0 --tofu-dir PATH --scenario-name NAME --benchmark-dir PATH --run-id ID [--local-log-dir PATH] [--os-tuning standard|network-throughput] [--instance-affinity none|co-located|different-host] [--access-mode public|private] [--benchmark NAME]
+usage: $0 --tofu-dir PATH --scenario-name NAME --benchmark-dir PATH --run-id ID [--local-log-dir PATH] [--os-tuning standard|network-throughput] [--instance-affinity none|co-located|different-host] [--access-mode public|private] [--server-region NAME] [--placement-mode NAME] [--benchmark NAME]
 USAGE
 }
 
@@ -32,6 +34,8 @@ while [[ $# -gt 0 ]]; do
     --os-tuning) OS_TUNING="$2"; shift 2 ;;
     --instance-affinity) INSTANCE_AFFINITY="$2"; shift 2 ;;
     --access-mode) ACCESS_MODE="$2"; shift 2 ;;
+    --server-region) SERVER_REGION="$2"; shift 2 ;;
+    --placement-mode) PLACEMENT_MODE="$2"; shift 2 ;;
     --results-root) REMOTE_RESULTS_ROOT="$2"; shift 2 ;;
     --benchmark) BENCHMARK_NAMES+=("$2"); shift 2 ;;
     -h|--help) usage; exit 0 ;;
@@ -279,7 +283,7 @@ kill_stale_server() {
 write_remote_metadata() {
   local tmp
   tmp="$(mktemp /tmp/cloud-measuring-scenario.XXXXXX.env)"
-  write_env_file "$tmp" RUN_ID SCENARIO_NAME OS_TUNING INSTANCE_AFFINITY PLACEMENT_GROUP_NAME PLACEMENT_GROUP_STRATEGY ACCESS_MODE CLIENT_PUBLIC_IP SERVER_PUBLIC_IP CLIENT_PRIVATE_IP SERVER_PRIVATE_IP CLIENT_SSH_HOST SERVER_SSH_HOST SSH_USER CLIENT_MACHINE_TYPE SERVER_MACHINE_TYPE CLIENT_AVAILABILITY_ZONE SERVER_AVAILABILITY_ZONE CLIENT_CPU_LIST SERVER_CPU_LIST
+  write_env_file "$tmp" RUN_ID SCENARIO_NAME OS_TUNING INSTANCE_AFFINITY ACCESS_MODE CLIENT_PUBLIC_IP SERVER_PUBLIC_IP CLIENT_PRIVATE_IP SERVER_PRIVATE_IP CLIENT_SSH_HOST SERVER_SSH_HOST SSH_USER CLIENT_MACHINE_TYPE SERVER_MACHINE_TYPE CLIENT_AVAILABILITY_ZONE SERVER_AVAILABILITY_ZONE CLIENT_CPU_LIST SERVER_CPU_LIST SERVER_REGION PLACEMENT_MODE
   scp_to "$tmp" "$CLIENT_SSH_HOST" "${REMOTE_SCENARIO_DIR}/scenario.env"
   scp_to "$tmp" "$SERVER_SSH_HOST" "${REMOTE_SCENARIO_DIR}/scenario.env"
   rm -f "$tmp"

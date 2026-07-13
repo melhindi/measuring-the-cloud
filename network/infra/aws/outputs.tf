@@ -38,20 +38,24 @@ output "server_availability_zone" {
   value = var.server_availability_zone
 }
 
+output "cross_region" {
+  value = local.cross_region
+}
+
 output "name_prefix" {
   value = local.name_prefix
 }
 
 output "vpc_id" {
-  value = trimspace(var.existing_vpc_id) != "" ? var.existing_vpc_id : aws_vpc.main[0].id
+  value = local.use_existing_vpc ? var.existing_vpc_id : aws_vpc.main[0].id
 }
 
 output "security_group_id" {
-  value = trimspace(var.existing_security_group_id) != "" ? var.existing_security_group_id : aws_security_group.bench[0].id
+  value = local.use_existing_security_group ? var.existing_security_group_id : aws_security_group.bench[0].id
 }
 
 output "security_group_name" {
-  value = trimspace(var.existing_security_group_id) != "" ? data.aws_security_group.existing[0].name : aws_security_group.bench[0].name
+  value = local.use_existing_security_group ? var.existing_security_group_id : aws_security_group.bench[0].name
 }
 
 output "instance_affinity" {
@@ -59,9 +63,9 @@ output "instance_affinity" {
 }
 
 output "placement_group_name" {
-  value = var.instance_affinity != "none" ? aws_placement_group.bench[0].name : null
+  value = local.use_placement_group ? aws_placement_group.bench[0].name : null
 }
 
 output "placement_group_strategy" {
-  value = var.instance_affinity == "co-located" ? "cluster" : var.instance_affinity == "different-host" ? "spread" : null
+  value = local.use_placement_group ? local.placement_strategy : null
 }

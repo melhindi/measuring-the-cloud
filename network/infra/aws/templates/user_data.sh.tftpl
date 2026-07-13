@@ -6,6 +6,28 @@ log() {
 }
 
 export DEBIAN_FRONTEND=noninteractive
+
+if [[ "${node_role}" == "runner" ]]; then
+  apt-get update -y
+  apt-get install -y openssh-client rsync jq util-linux iproute2 curl ca-certificates gnupg apt-transport-https
+
+  curl --proto '=https' --tlsv1.2 -fsSL https://get.opentofu.org/install-opentofu.sh -o /tmp/install-opentofu.sh
+  chmod +x /tmp/install-opentofu.sh
+  /tmp/install-opentofu.sh --install-method deb
+  rm -f /tmp/install-opentofu.sh
+
+  mkdir -p /opt/cloud-measuring/{state,artifacts,bin,repo}
+  chown -R ubuntu:ubuntu /opt/cloud-measuring
+
+  cat >/opt/cloud-measuring/node.env <<EOF
+NODE_ROLE=${node_role}
+EOF
+  chown ubuntu:ubuntu /opt/cloud-measuring/node.env
+
+  log "benchmark runner bootstrap complete"
+  exit 0
+fi
+
 apt-get update -y
 apt-get install -y fio iperf3 sockperf jq rsync sysstat iproute2 ethtool util-linux
 
@@ -85,6 +107,7 @@ case "$profile" in
         apply_best_effort ethtool -G "$iface" rx 1024 tx 1024
       fi
       apply_best_effort ip link set "$iface" txqueuelen 10000
+      apply_best_effort ip link set "$iface" mtu 9000
     else
       log "primary interface not detected; skipping interface-local tuning"
     fi

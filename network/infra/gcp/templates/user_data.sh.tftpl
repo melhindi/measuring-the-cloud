@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+log() {
+  echo "[cloud-measuring][$(date --iso-8601=seconds)] $*" | tee -a /var/log/cloud-measuring-user-data.log
+}
+
+export DEBIAN_FRONTEND=noninteractive
+if [[ "${node_role}" == "runner" ]]; then
+  apt-get update -y
+  apt-get install -y openssh-client rsync jq util-linux iproute2 curl ca-certificates gnupg apt-transport-https
+
+  curl --proto '=https' --tlsv1.2 -fsSL https://get.opentofu.org/install-opentofu.sh -o /tmp/install-opentofu.sh
+  chmod +x /tmp/install-opentofu.sh
+  /tmp/install-opentofu.sh --install-method deb
+  rm -f /tmp/install-opentofu.sh
+
+  mkdir -p /opt/cloud-measuring/{state,artifacts,bin,repo}
+  chown -R ubuntu:ubuntu /opt/cloud-measuring
+
+  cat >/opt/cloud-measuring/node.env <<EOF
+NODE_ROLE=${node_role}
+EOF
+  chown ubuntu:ubuntu /opt/cloud-measuring/node.env
+
+  log "benchmark runner bootstrap complete"
+  exit 0
+fi
+
+apt-get update -y
+apt-get install -y fio iperf3 sockperf jq rsync sysstat iproute2 ethtool util-linux
+
+mkdir -p /opt/cloud-measuring/results /opt/cloud-measuring/bin
+chown -R ubuntu:ubuntu /opt/cloud-measuring
+
+cat >/opt/cloud-measuring/node.env <<EOF
+NODE_ROLE=${node_role}
+EOF
+chown ubuntu:ubuntu /opt/cloud-measuring/node.env
+
+cat >/opt/cloud-measuring/bin/apply-os-tuning.sh <<'TUNING'
+#!/usr/bin/env bash
+set -euo pipefail
+
+profile="$${1:-standard}"
+
+log() {
+  echo "[os-tuning][$(date --iso-8601=seconds)] $*"
+}
+
+primary_iface() {
+  ip route get 1.1.1.1 2>/dev/null | awk '/dev/ {
+    for (i = 1; i <= NF; i++) {
+      if ($i == "dev") {
+        print $(i + 1)
+        exit
+      }
+    }
+  }'
+}
+
+apply_sysctl() {
+  local key="$1"
+  local value="$2"
+  local before=""
+  before="$(sysctl -n "$key" 2>/dev/null || true)"
+  log "sysctl $${key}: '$${before}' -> '$${value}'"
+  sysctl -w "$${key}=$${value}"
+}
+
+apply_best_effort() {
+  log "best-effort: $*"
+  "$@" || log "best-effort command failed: $*"
+}
+
+log "profile=$${profile}"
+log "kernel=$(uname -r)"
+
+case "$profile" in
+  standard)
+    log "standard profile selected; no OS network tuning applied"
+    ;;
+  network-throughput)
+    apply_sysctl net.core.default_qdisc fq
+    apply_sysctl net.ipv4.tcp_congestion_control bbr
+
+    apply_sysctl net.core.rmem_max 134217728
+    apply_sysctl net.core.wmem_max 134217728
+    apply_sysctl net.ipv4.tcp_rmem "4096 87380 67108864"
+    apply_sysctl net.ipv4.tcp_wmem "4096 65536 67108864"
+    apply_sysctl net.ipv4.udp_rmem_min 16384
+    apply_sysctl net.ipv4.udp_wmem_min 16384
+
+    apply_sysctl net.core.somaxconn 32768
+    apply_sysctl net.core.netdev_max_backlog 32768
+    apply_sysctl net.core.netdev_budget 1000
+    apply_sysctl net.core.optmem_max 65535
+    apply_sysctl net.ipv4.ip_local_port_range "1024 65535"
+    apply_sysctl net.ipv4.tcp_tw_reuse 1
+    apply_sysctl net.ipv4.tcp_frto 0
+
+    iface="$(primary_iface)"
+    if [[ -n "$iface" ]]; then
+      log "primary_iface=$${iface}"
+      if command -v ethtool >/dev/null 2>&1; then
+        apply_best_effort ethtool -G "$iface" rx 1024 tx 1024
+      fi
+      apply_best_effort ip link set "$iface" txqueuelen 10000
+    else
+      log "primary interface not detected; skipping interface-local tuning"
+    fi
+    ;;
+  *)
+    echo "unknown OS tuning profile: $${profile}" >&2
+    exit 1
+    ;;
+esac
+TUNING
+chmod +x /opt/cloud-measuring/bin/apply-os-tuning.sh
+
+systemctl stop iperf3 || true
+systemctl disable iperf3 || true
+
+log "network benchmark node bootstrap complete (${node_role})"

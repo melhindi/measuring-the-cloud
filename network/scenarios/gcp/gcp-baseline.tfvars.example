@@ -1,0 +1,30 @@
+# Copy to gcp-baseline.tfvars and fill in your values.
+
+# ----------------------------------------------------------------------------
+# Required
+# ----------------------------------------------------------------------------
+gcp_project_id       = "your-gcp-project-id"
+project_name         = "cloud-measuring-net"
+ssh_private_key_path = "~/.ssh/id_ed25519"
+ssh_public_key_path  = "~/.ssh/id_ed25519.pub"
+
+# Defaults — overridden per scenario by runner.sh
+client_machine_type      = "n2-standard-8"
+server_machine_type      = "n2-standard-8"
+client_availability_zone = "europe-west3-a"
+server_availability_zone = "europe-west3-a"
+
+# ----------------------------------------------------------------------------
+# Optional — defaults shown
+# ----------------------------------------------------------------------------
+# gcp_region           = "europe-west3"
+# server_region        = ""              # set for cross-region
+# client_subnet_cidr   = "10.64.0.0/24"
+# server_subnet_cidr   = "10.65.0.0/24" # only used in cross-region scenarios
+# assign_public_ip     = true
+# ssh_ingress_cidr     = "0.0.0.0/0"
+# image                = "ubuntu-os-cloud/ubuntu-2404-lts-amd64"
+# root_volume_size_gib = 30
+# root_volume_type     = "pd-balanced"
+# instance_affinity    = "none"
+# enable_tier1_networking = false

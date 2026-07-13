@@ -8,7 +8,7 @@ network_client_subnet_cidr = "10.65.11.0/24"
 network_server_subnet_cidr = "10.65.12.0/24"
 storage_subnet_cidr = "10.65.21.0/24"
 runner_private_ip_host = 10
-runner_availability_zone = "eu-central-1c"
+runner_availability_zone = "eu-central-1a"
 runner_machine_type = "c6i.large"
 
 # Ubuntu 24.04 AMI in eu-central-1. Replace for other regions.

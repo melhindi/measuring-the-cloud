@@ -53,7 +53,7 @@ variable "ssh_ingress_cidr" {
 }
 
 variable "ssh_public_key_path" {
-  description = "Path to SSH public key, required unless existing_key_pair_name is set"
+  description = "Path to SSH public key. Required unless existing_key_pair_name is set."
   type        = string
   default     = ""
 }
@@ -83,7 +83,7 @@ variable "runner_machine_type" {
 variable "runner_availability_zone" {
   description = "AWS availability zone for the runner node"
   type        = string
-  default     = "eu-central-1c"
+  default     = "eu-central-1a"
 }
 
 variable "runner_private_ip_host" {

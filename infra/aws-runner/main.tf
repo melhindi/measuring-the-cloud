@@ -55,17 +55,13 @@ resource "aws_vpc" "main" {
   enable_dns_support   = true
   enable_dns_hostnames = true
 
-  tags = merge(local.labels, {
-    Name = "${local.name_prefix}-vpc"
-  })
+  tags = merge(local.labels, { Name = "${local.name_prefix}-vpc" })
 }
 
 resource "aws_internet_gateway" "main" {
   vpc_id = aws_vpc.main.id
 
-  tags = merge(local.labels, {
-    Name = "${local.name_prefix}-igw"
-  })
+  tags = merge(local.labels, { Name = "${local.name_prefix}-igw" })
 }
 
 resource "aws_subnet" "runner" {
@@ -74,9 +70,7 @@ resource "aws_subnet" "runner" {
   availability_zone       = var.runner_availability_zone
   map_public_ip_on_launch = true
 
-  tags = merge(local.labels, {
-    Name = "${local.name_prefix}-subnet"
-  })
+  tags = merge(local.labels, { Name = "${local.name_prefix}-subnet" })
 }
 
 resource "aws_route_table" "public" {
@@ -87,9 +81,7 @@ resource "aws_route_table" "public" {
     gateway_id = aws_internet_gateway.main.id
   }
 
-  tags = merge(local.labels, {
-    Name = "${local.name_prefix}-public-rt"
-  })
+  tags = merge(local.labels, { Name = "${local.name_prefix}-public-rt" })
 }
 
 resource "aws_route_table_association" "runner" {
@@ -100,18 +92,14 @@ resource "aws_route_table_association" "runner" {
 resource "aws_eip" "nat" {
   domain = "vpc"
 
-  tags = merge(local.labels, {
-    Name = "${local.name_prefix}-nat-eip"
-  })
+  tags = merge(local.labels, { Name = "${local.name_prefix}-nat-eip" })
 }
 
 resource "aws_nat_gateway" "main" {
   allocation_id = aws_eip.nat.id
   subnet_id     = aws_subnet.runner.id
 
-  tags = merge(local.labels, {
-    Name = "${local.name_prefix}-nat"
-  })
+  tags = merge(local.labels, { Name = "${local.name_prefix}-nat" })
 
   depends_on = [aws_internet_gateway.main]
 }
@@ -142,9 +130,7 @@ resource "aws_security_group" "runner" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = merge(local.labels, {
-    Name = "${local.name_prefix}-sg"
-  })
+  tags = merge(local.labels, { Name = "${local.name_prefix}-sg" })
 }
 
 resource "aws_key_pair" "runner" {
@@ -152,18 +138,14 @@ resource "aws_key_pair" "runner" {
   key_name   = "${local.name_prefix}-key"
   public_key = chomp(file(var.ssh_public_key_path))
 
-  tags = merge(local.labels, {
-    Name = "${local.name_prefix}-key"
-  })
+  tags = merge(local.labels, { Name = "${local.name_prefix}-key" })
 }
 
 resource "aws_iam_role" "runner" {
   name               = "${local.name_prefix}-role"
   assume_role_policy = data.aws_iam_policy_document.runner_assume_role.json
 
-  tags = merge(local.labels, {
-    Name = "${local.name_prefix}-role"
-  })
+  tags = merge(local.labels, { Name = "${local.name_prefix}-role" })
 }
 
 resource "aws_iam_role_policy_attachment" "runner_admin" {
@@ -175,9 +157,7 @@ resource "aws_iam_instance_profile" "runner" {
   name = "${local.name_prefix}-profile"
   role = aws_iam_role.runner.name
 
-  tags = merge(local.labels, {
-    Name = "${local.name_prefix}-profile"
-  })
+  tags = merge(local.labels, { Name = "${local.name_prefix}-profile" })
 }
 
 resource "aws_instance" "runner" {
@@ -201,8 +181,5 @@ resource "aws_instance" "runner" {
     node_role = "runner"
   })
 
-  tags = merge(local.labels, {
-    Name = "${local.name_prefix}-runner"
-    Role = "runner"
-  })
+  tags = merge(local.labels, { Name = "${local.name_prefix}-runner", Role = "runner" })
 }
