@@ -2,7 +2,8 @@
 
 Benchmark framework for comparing cloud network and storage performance.
 
-The current implemented slices are STACKIT and AWS network and storage
+The current implemented slices are STACKIT and AWS network and storage, plus
+GCP network benchmarks.
 benchmarks. Both providers support a persistent benchmark runner VM path for
 private-IP execution:
 

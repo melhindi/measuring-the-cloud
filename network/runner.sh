@@ -67,7 +67,7 @@ run_scenario() {
   scenario_file="$(abs_path "$scenario_file")"
   require_file "$scenario_file"
 
-  unset SCENARIO_NAME PROVIDER TOFU_DIR TFVARS_FILE BENCHMARK_DIR PLACEMENT_MODE OS_TUNING INSTANCE_AFFINITY CLIENT_MACHINE_TYPE SERVER_MACHINE_TYPE CLIENT_AVAILABILITY_ZONE SERVER_AVAILABILITY_ZONE SKIP SKIP_REASON
+  unset SCENARIO_NAME PROVIDER TOFU_DIR TFVARS_FILE BENCHMARK_DIR PLACEMENT_MODE OS_TUNING INSTANCE_AFFINITY CLIENT_MACHINE_TYPE SERVER_MACHINE_TYPE CLIENT_AVAILABILITY_ZONE SERVER_AVAILABILITY_ZONE SERVER_REGION ENABLE_TIER1_NETWORKING SKIP SKIP_REASON
   # shellcheck disable=SC1090
   source "$scenario_file"
 
@@ -89,8 +89,8 @@ run_scenario() {
   [[ -n "${SCENARIO_NAME:-}" ]] || die "${scenario_file}: SCENARIO_NAME is required"
   [[ "$SCENARIO_NAME" =~ ^[A-Za-z0-9._-]+$ ]] || die "${scenario_file}: SCENARIO_NAME contains unsafe characters"
   case "${PROVIDER:-}" in
-    stackit|aws) ;;
-    *) die "${scenario_file}: PROVIDER must be one of: stackit, aws" ;;
+    stackit|aws|gcp) ;;
+    *) die "${scenario_file}: PROVIDER must be one of: stackit, aws, gcp" ;;
   esac
   [[ -n "${TOFU_DIR:-}" ]] || die "${scenario_file}: TOFU_DIR is required"
   [[ -n "${TFVARS_FILE:-}" ]] || die "${scenario_file}: TFVARS_FILE is required"
@@ -174,6 +174,12 @@ run_scenario() {
     apply_tfvar_overlay "$merged_tfvars" "client_availability_zone" "\"${CLIENT_AVAILABILITY_ZONE}\""
     apply_tfvar_overlay "$merged_tfvars" "server_availability_zone" "\"${SERVER_AVAILABILITY_ZONE}\""
   fi
+  if [[ -n "${SERVER_REGION:-}" ]]; then
+    apply_tfvar_overlay "$merged_tfvars" "server_region" "\"${SERVER_REGION}\""
+  fi
+  if [[ -n "${ENABLE_TIER1_NETWORKING:-}" ]]; then
+    apply_tfvar_overlay "$merged_tfvars" "enable_tier1_networking" "${ENABLE_TIER1_NETWORKING}"
+  fi
   trap 'rm -f "${merged_tfvars:-}"' RETURN
 
   "${SCRIPT_DIR}/scripts/setup_infra.sh" --tofu-dir "$TOFU_DIR" --tfvars-file "$merged_tfvars" || setup_rc=$?
@@ -186,6 +192,8 @@ run_scenario() {
       --os-tuning "$OS_TUNING" \
       --instance-affinity "$INSTANCE_AFFINITY" \
       --access-mode "$ACCESS_MODE" \
+      ${SERVER_REGION:+--server-region "$SERVER_REGION"} \
+      ${PLACEMENT_MODE:+--placement-mode "$PLACEMENT_MODE"} \
       --local-log-dir "$LOCAL_RUN_DIR" \
       --run-id "$RUN_ID" \
       "${benchmark_args[@]}" || bench_rc=$?

@@ -22,7 +22,7 @@ ACCESS_MODE="private"
 
 usage() {
   cat >&2 <<USAGE
-usage: $0 [--workload network|storage] [--runner-provider stackit|aws] [--scenario FILE ... | --scenario-dir DIR] [--benchmark NAME ...] [--destroy always|success|never] [--continue-on-error] [--service-account-json PATH] [--basic-tofu-dir DIR] [--basic-tfvars-file FILE] [--run-id ID]
+usage: $0 [--workload network|storage] [--runner-provider stackit|aws|gcp] [--scenario FILE ... | --scenario-dir DIR] [--benchmark NAME ...] [--destroy always|success|never] [--continue-on-error] [--service-account-json PATH] [--basic-tofu-dir DIR] [--basic-tfvars-file FILE] [--run-id ID]
 USAGE
 }
 
@@ -40,7 +40,7 @@ infer_provider_from_path() {
   local prefix="${rel#*/scenarios/}"
   [[ "$prefix" != "$rel" ]] || return 1
   prefix="${prefix%%/*}"
-  [[ "$prefix" == "stackit" || "$prefix" == "aws" ]] || return 1
+  [[ "$prefix" == "stackit" || "$prefix" == "aws" || "$prefix" == "gcp" ]] || return 1
   printf '%s\n' "$prefix"
 }
 
@@ -89,6 +89,7 @@ fi
 if [[ "${#SCENARIO_FILES[@]}" -eq 0 ]]; then
   case "$RUNNER_PROVIDER" in
     aws) SCENARIO_FILES+=("network/scenarios/aws/baseline.sh") ;;
+    gcp) SCENARIO_FILES+=("network/scenarios/gcp/baseline.sh") ;;
     *) SCENARIO_FILES+=("network/scenarios/stackit/baseline.sh") ;;
   esac
 fi
@@ -129,8 +130,8 @@ if [[ -z "$RUNNER_PROVIDER" ]]; then
   RUNNER_PROVIDER="$SCENARIO_PROVIDER"
 fi
 case "$RUNNER_PROVIDER" in
-  stackit|aws) ;;
-  *) die "--runner-provider must be one of: stackit, aws" ;;
+  stackit|aws|gcp) ;;
+  *) die "--runner-provider must be one of: stackit, aws, gcp" ;;
 esac
 [[ -n "$SCENARIO_PROVIDER" ]] || die "unable to infer provider from selected scenarios"
 [[ "$RUNNER_PROVIDER" == "$SCENARIO_PROVIDER" ]] || die "runner provider ${RUNNER_PROVIDER} does not match scenario provider ${SCENARIO_PROVIDER}"
@@ -153,6 +154,9 @@ case "$RUNNER_PROVIDER" in
     require_file "$SERVICE_ACCOUNT_JSON"
     ;;
   aws)
+    [[ -z "$SERVICE_ACCOUNT_JSON" ]] || die "--service-account-json is only supported for --runner-provider stackit"
+    ;;
+  gcp)
     [[ -z "$SERVICE_ACCOUNT_JSON" ]] || die "--service-account-json is only supported for --runner-provider stackit"
     ;;
 esac
@@ -189,6 +193,11 @@ case "$RUNNER_PROVIDER" in
         --tfvars-file "$BASIC_TFVARS_FILE"
     ;;
   aws)
+    "${REPO_ROOT}/scripts/setup_infra.sh" \
+      --tofu-dir "$BASIC_TOFU_DIR" \
+      --tfvars-file "$BASIC_TFVARS_FILE"
+    ;;
+  gcp)
     "${REPO_ROOT}/scripts/setup_infra.sh" \
       --tofu-dir "$BASIC_TOFU_DIR" \
       --tfvars-file "$BASIC_TFVARS_FILE"
@@ -298,6 +307,11 @@ export STACKIT_SERVICE_ACCOUNT_KEY_PATH='${RUNNER_WORKDIR}/state/stackit-service
 EOF
     ;;
   aws)
+    cat >"$tmp_auth_env" <<'EOF'
+#!/usr/bin/env bash
+EOF
+    ;;
+  gcp)
     cat >"$tmp_auth_env" <<'EOF'
 #!/usr/bin/env bash
 EOF
@@ -427,6 +441,29 @@ benchmark_block_volume_type = "gp3"
 benchmark_block_volume_iops = 3000
 benchmark_block_volume_throughput_mbps = 125
 benchmark_block_filesystem = "xfs"
+EOF
+    ;;
+  gcp:network)
+    GCP_PROJECT_ID="$(tofu_output_raw "$tofu" "$BASIC_TOFU_DIR" gcp_project_id)"
+    GCP_REGION="$(tofu_output_raw "$tofu" "$BASIC_TOFU_DIR" gcp_region)"
+    RUNNER_AZ="$(tofu_output_raw "$tofu" "$BASIC_TOFU_DIR" runner_availability_zone)"
+    NETWORK_NAME="$(tofu_output_raw "$tofu" "$BASIC_TOFU_DIR" network_name)"
+    CLIENT_SUBNET="$(tofu_output_raw "$tofu" "$BASIC_TOFU_DIR" network_client_subnetwork_name)"
+    RUNNER_SUBNET_CIDR="$(tofu_output_raw "$tofu" "$BASIC_TOFU_DIR" subnet_cidr)"
+    cat >"$tmp_tfvars" <<EOF
+gcp_project_id = "${GCP_PROJECT_ID}"
+gcp_region = "${GCP_REGION}"
+client_availability_zone = "${RUNNER_AZ}"
+server_availability_zone = "${RUNNER_AZ}"
+client_machine_type = "n2-standard-8"
+server_machine_type = "n2-standard-8"
+ssh_public_key_path = "${REMOTE_BENCH_KEY}.pub"
+ssh_private_key_path = "${REMOTE_BENCH_KEY}"
+existing_network_name = "${NETWORK_NAME}"
+existing_client_subnetwork_name = "${CLIENT_SUBNET}"
+ssh_ingress_cidr = "${RUNNER_SUBNET_CIDR}"
+assign_public_ip = false
+instance_affinity = "none"
 EOF
     ;;
   *)

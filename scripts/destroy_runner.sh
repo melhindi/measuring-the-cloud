@@ -11,7 +11,7 @@ RUNNER_PROVIDER=""
 
 usage() {
   cat >&2 <<USAGE
-usage: $0 [--runner-provider stackit|aws] [--tofu-dir PATH] [--tfvars-file PATH]
+usage: $0 [--runner-provider stackit|aws|gcp] [--tofu-dir PATH] [--tfvars-file PATH]
 USAGE
 }
 
@@ -27,8 +27,8 @@ done
 
 if [[ -n "$RUNNER_PROVIDER" ]]; then
   case "$RUNNER_PROVIDER" in
-    stackit|aws) ;;
-    *) die "--runner-provider must be one of: stackit, aws" ;;
+    stackit|aws|gcp) ;;
+    *) die "--runner-provider must be one of: stackit, aws, gcp" ;;
   esac
   TOFU_DIR="infra/${RUNNER_PROVIDER}-runner"
   TFVARS_FILE="infra/${RUNNER_PROVIDER}-runner/basic-infra.tfvars"

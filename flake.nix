@@ -48,6 +48,7 @@
             opentofu
             awscli2
             stackit-cli
+            google-cloud-sdk
             sockperf
             fio
             iperf3

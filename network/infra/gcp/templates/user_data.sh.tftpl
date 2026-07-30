@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -y
+apt-get install -y fio iperf3 sockperf jq rsync sysstat iproute2 ethtool util-linux
+mkdir -p /opt/cloud-measuring/{results,bin}
+chown -R ubuntu:ubuntu /opt/cloud-measuring
+cat >/opt/cloud-measuring/bin/apply-os-tuning.sh <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "$${1:-standard}" in
+standard) ;;
+network-throughput) sysctl -w net.core.default_qdisc=fq net.ipv4.tcp_congestion_control=bbr net.core.rmem_max=134217728 net.core.wmem_max=134217728 net.core.somaxconn=32768 ;;
+*) echo "unknown tuning profile" >&2; exit 1 ;;
+esac
+EOF
+chmod +x /opt/cloud-measuring/bin/apply-os-tuning.sh
+systemctl disable --now iperf3 || true
