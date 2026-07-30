@@ -40,6 +40,12 @@ variable "network_server_subnet_cidr" {
   default     = "10.65.12.0/24"
 }
 
+variable "network_server_image_id" {
+  description = "AMI ID for the destination-region server in AWS cross-region network scenarios. The default is Canonical Ubuntu 24.04 in us-west-2 for the shipped US-East to US-West scenarios."
+  type        = string
+  default     = "ami-0ac74609c6396bed3"
+}
+
 variable "storage_subnet_cidr" {
   description = "Subnet CIDR reserved for AWS storage benchmark instances when reusing the runner VPC"
   type        = string
@@ -70,8 +76,9 @@ variable "existing_key_pair_name" {
 }
 
 variable "image_id" {
-  description = "AMI ID for the runner VM"
+  description = "AMI ID for the runner VM. Leave empty to use Canonical Ubuntu 24.04 from the regional AWS SSM public parameter."
   type        = string
+  default     = ""
 }
 
 variable "runner_machine_type" {
@@ -83,7 +90,7 @@ variable "runner_machine_type" {
 variable "runner_availability_zone" {
   description = "AWS availability zone for the runner node"
   type        = string
-  default     = "eu-central-1c"
+  default     = "us-east-1a"
 }
 
 variable "runner_private_ip_host" {

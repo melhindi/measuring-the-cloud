@@ -1,18 +1,21 @@
 # Copy to basic-infra.tfvars and adjust for your AWS account.
 
-aws_region = "eu-central-1"
+aws_region = "us-east-1"
 aws_profile = ""
 vpc_cidr = "10.65.0.0/16"
 subnet_cidr = "10.65.1.0/24"
 network_client_subnet_cidr = "10.65.11.0/24"
 network_server_subnet_cidr = "10.65.12.0/24"
+# Canonical Ubuntu 24.04 LTS in us-west-2 (2026-07-14 release), used by the
+# shipped us-east-1 to us-west-2 cross-region network scenarios.
+network_server_image_id = "ami-0ac74609c6396bed3"
 storage_subnet_cidr = "10.65.21.0/24"
 runner_private_ip_host = 10
-runner_availability_zone = "eu-central-1c"
+runner_availability_zone = "us-east-1a"
 runner_machine_type = "c6i.large"
 
-# Ubuntu 24.04 AMI in eu-central-1. Replace for other regions.
-image_id = "ami-04baa57774212d79f"
+# Canonical Ubuntu 24.04 LTS in us-east-1 (2026-07-14 release).
+image_id = "ami-052355af2a014bd2c"
 
 # Option A: create a new AWS key pair from a local public key.
 ssh_public_key_path = "~/.ssh/id_ed25519.pub"

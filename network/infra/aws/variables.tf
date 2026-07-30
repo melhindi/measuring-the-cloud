@@ -5,9 +5,15 @@ variable "project_name" {
 }
 
 variable "aws_region" {
-  description = "AWS region"
+  description = "AWS region for the client instance and primary VPC"
   type        = string
   default     = "eu-central-1"
+}
+
+variable "server_region" {
+  description = "AWS region for the server instance. Leave empty for same-region scenarios."
+  type        = string
+  default     = ""
 }
 
 variable "aws_profile" {
@@ -17,9 +23,15 @@ variable "aws_profile" {
 }
 
 variable "vpc_cidr" {
-  description = "Benchmark VPC CIDR"
+  description = "IPv4 CIDR for the client VPC"
   type        = string
   default     = "10.74.0.0/16"
+}
+
+variable "server_vpc_cidr" {
+  description = "IPv4 CIDR for the dedicated server VPC in cross-region scenarios"
+  type        = string
+  default     = "10.75.0.0/16"
 }
 
 variable "existing_vpc_id" {
@@ -40,6 +52,24 @@ variable "server_subnet_cidr" {
   default     = "10.74.2.0/24"
 }
 
+variable "server_region_subnet_cidr" {
+  description = "IPv4 CIDR for the server benchmark subnet in cross-region scenarios"
+  type        = string
+  default     = "10.75.1.0/24"
+}
+
+variable "server_nat_subnet_cidr" {
+  description = "IPv4 CIDR for the server NAT gateway subnet in cross-region scenarios"
+  type        = string
+  default     = "10.75.2.0/24"
+}
+
+variable "client_nat_subnet_cidr" {
+  description = "IPv4 CIDR for a managed client NAT gateway subnet when running cross-region privately without a shared VPC"
+  type        = string
+  default     = "10.74.254.0/24"
+}
+
 variable "ssh_ingress_cidr" {
   description = "CIDR allowed to SSH into benchmark instances"
   type        = string
@@ -54,6 +84,18 @@ variable "existing_security_group_id" {
 
 variable "existing_nat_gateway_id" {
   description = "Existing NAT gateway ID to reuse for private runner mode when benchmark instances have no public IP."
+  type        = string
+  default     = ""
+}
+
+variable "existing_runner_route_table_id" {
+  description = "Route table ID of the persistent AWS runner subnet. Required for cross-region runs that reuse the runner VPC."
+  type        = string
+  default     = ""
+}
+
+variable "runner_subnet_cidr" {
+  description = "CIDR of the persistent AWS runner subnet. Required for cross-region runs that reuse the runner VPC."
   type        = string
   default     = ""
 }
@@ -84,6 +126,12 @@ variable "assign_public_ip" {
 variable "image_id" {
   description = "AMI ID for both benchmark nodes"
   type        = string
+}
+
+variable "server_image_id" {
+  description = "AMI ID for the server region. Leave empty to resolve Canonical Ubuntu 24.04 through the regional AWS SSM public parameter."
+  type        = string
+  default     = ""
 }
 
 variable "client_machine_type" {

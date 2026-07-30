@@ -34,6 +34,10 @@ output "nat_gateway_id" {
   value = aws_nat_gateway.main.id
 }
 
+output "runner_route_table_id" {
+  value = aws_route_table.public.id
+}
+
 output "subnet_cidr" {
   value = var.subnet_cidr
 }
@@ -46,12 +50,16 @@ output "network_server_subnet_cidr" {
   value = var.network_server_subnet_cidr
 }
 
+output "network_server_image_id" {
+  value = var.network_server_image_id
+}
+
 output "storage_subnet_cidr" {
   value = var.storage_subnet_cidr
 }
 
 output "image_id" {
-  value = var.image_id
+  value = local.runner_ami
 }
 
 output "runner_machine_type" {

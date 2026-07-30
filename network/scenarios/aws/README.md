@@ -15,3 +15,7 @@ Current placement mapping:
 - `INSTANCE_AFFINITY=different-host`: EC2 spread placement group
 
 Cluster placement is intentionally modeled as single-AZ only.
+
+Cross-region scenarios live in `cross-region/`. They use VPC peering and a
+runner in the scenario's client region; the initial examples use US East to US
+West.

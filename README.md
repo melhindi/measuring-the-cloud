@@ -46,6 +46,10 @@ Or provision an AWS runner and launch an AWS storage/network matrix:
   --scenario-dir network/scenarios/aws/all
 ```
 
+The AWS runner example defaults to `us-east-1`. This is also the source region
+for the shipped private cross-region smoke scenarios in
+`network/scenarios/aws/cross-region/`, which peer to `us-west-2`.
+
 For Stackit scenario folders:
 
 ```bash

@@ -141,6 +141,7 @@ run_scenario() {
     [[ -n "$SERVER_MACHINE_TYPE" ]] && echo "  server_machine_type=${SERVER_MACHINE_TYPE}"
     [[ -n "$CLIENT_AVAILABILITY_ZONE" ]] && echo "  client_availability_zone=${CLIENT_AVAILABILITY_ZONE}"
     [[ -n "$SERVER_AVAILABILITY_ZONE" ]] && echo "  server_availability_zone=${SERVER_AVAILABILITY_ZONE}"
+    [[ -n "${SERVER_REGION:-}" ]] && echo "  server_region=${SERVER_REGION}"
     if [[ "${#BENCHMARK_NAMES[@]}" -gt 0 ]]; then
     echo "  benchmarks=${BENCHMARK_NAMES[*]}"
   else

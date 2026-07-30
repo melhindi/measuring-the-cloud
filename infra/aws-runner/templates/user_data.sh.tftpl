@@ -8,7 +8,7 @@ log() {
 export DEBIAN_FRONTEND=noninteractive
 
 apt-get update -y
-apt-get install -y awscli openssh-client rsync jq util-linux iproute2 curl ca-certificates gnupg apt-transport-https
+apt-get install -y openssh-client rsync jq util-linux iproute2 curl ca-certificates gnupg apt-transport-https
 
 curl --proto '=https' --tlsv1.2 -fsSL https://get.opentofu.org/install-opentofu.sh -o /tmp/install-opentofu.sh
 chmod +x /tmp/install-opentofu.sh

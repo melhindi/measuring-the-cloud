@@ -41,6 +41,12 @@ locals {
     Project = var.project_name
     Run     = random_id.suffix.hex
   }
+  runner_ami = trimspace(var.image_id) != "" ? var.image_id : data.aws_ssm_parameter.ubuntu_2404[0].value
+}
+
+data "aws_ssm_parameter" "ubuntu_2404" {
+  count = trimspace(var.image_id) == "" ? 1 : 0
+  name  = "/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id"
 }
 
 check "ssh_key_inputs" {
@@ -181,7 +187,7 @@ resource "aws_iam_instance_profile" "runner" {
 }
 
 resource "aws_instance" "runner" {
-  ami                         = var.image_id
+  ami                         = local.runner_ami
   instance_type               = var.runner_machine_type
   availability_zone           = var.runner_availability_zone
   subnet_id                   = aws_subnet.runner.id

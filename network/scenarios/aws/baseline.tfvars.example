@@ -1,20 +1,31 @@
 # Copy to baseline.tfvars in this directory and adjust for your AWS account.
 
-aws_region            = "eu-central-1"
+aws_region            = "us-east-1"
 aws_profile           = ""
+
+# Cross-region scenarios override server_region from their scenario file. For
+# the shipped US-East to US-West examples, run from an AWS runner in us-east-1.
+# server_region = ""
 
 vpc_cidr           = "10.74.0.0/16"
 client_subnet_cidr = "10.74.1.0/24"
 server_subnet_cidr = "10.74.2.0/24"
 
-client_availability_zone = "eu-central-1c"
-server_availability_zone = "eu-central-1c"
+# Cross-region-only server networking. These CIDRs must not overlap with the
+# client VPC or its benchmark subnets.
+# server_vpc_cidr           = "10.75.0.0/16"
+# server_region_subnet_cidr = "10.75.1.0/24"
+# server_nat_subnet_cidr    = "10.75.2.0/24"
+
+client_availability_zone = "us-east-1a"
+server_availability_zone = "us-east-1a"
 
 client_machine_type = "c6id.large"
 server_machine_type = "c6id.large"
 
-# Ubuntu 24.04 AMI in eu-central-1. Replace for other regions.
-image_id = "ami-04baa57774212d79f"
+# Canonical Ubuntu 24.04 LTS AMIs from the 2026-07-14 release.
+image_id        = "ami-052355af2a014bd2c" # us-east-1
+server_image_id = "ami-0ac74609c6396bed3" # us-west-2; used by the cross-region scenarios
 
 # Option A: create a new AWS key pair from a local public key.
 ssh_public_key_path  = "~/.ssh/id_ed25519.pub"
@@ -27,6 +38,9 @@ ssh_private_key_path = "~/.ssh/id_ed25519"
 # Optional shared-network reuse for dedicated runner mode.
 # existing_vpc_id            = "vpc-0123456789abcdef0"
 # existing_security_group_id = "sg-0123456789abcdef0"
+# existing_nat_gateway_id       = "nat-0123456789abcdef0"
+# existing_runner_route_table_id = "rtb-0123456789abcdef0"
+# runner_subnet_cidr             = "10.65.1.0/24"
 
 ssh_ingress_cidr = "0.0.0.0/0"
 assign_public_ip = true

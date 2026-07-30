@@ -7,11 +7,11 @@ output "client_private_ip" {
 }
 
 output "server_public_ip" {
-  value = var.assign_public_ip ? aws_instance.server.public_ip : null
+  value = local.cross_region ? null : (var.assign_public_ip ? aws_instance.server[0].public_ip : null)
 }
 
 output "server_private_ip" {
-  value = aws_instance.server.private_ip
+  value = local.cross_region ? aws_instance.server_remote[0].private_ip : aws_instance.server[0].private_ip
 }
 
 output "ssh_private_key_path" {
@@ -59,9 +59,17 @@ output "instance_affinity" {
 }
 
 output "placement_group_name" {
-  value = var.instance_affinity != "none" ? aws_placement_group.bench[0].name : null
+  value = local.use_placement_group && !local.cross_region ? aws_placement_group.bench[0].name : null
 }
 
 output "placement_group_strategy" {
-  value = var.instance_affinity == "co-located" ? "cluster" : var.instance_affinity == "different-host" ? "spread" : null
+  value = local.use_placement_group && !local.cross_region ? local.placement_strategy : null
+}
+
+output "cross_region" {
+  value = local.cross_region
+}
+
+output "server_region" {
+  value = local.effective_server_region
 }
