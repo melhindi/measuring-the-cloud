@@ -377,22 +377,23 @@ cpu_idle_facts_path() {
   printf '%s/cpu-idle-%s.env' "$REMOTE_SCENARIO_DIR" "$role"
 }
 
+# start/stop run whether or not this scenario asked for pinning. An unpinned
+# scenario still snapshots the idle counters, and its delta is the baseline that
+# says whether deep idle was being entered at all -- without which a pinned
+# run's zero is not interpretable.
 cpu_idle_start() {
   local host="$1"
   local role="$2"
-  local action="probe"
-  [[ "$CPU_IDLE_PINNING" == "1" ]] && action="start"
-  log "cpu-idle ${action} on ${role} (requested pinning=${CPU_IDLE_PINNING})"
-  if ! ssh_run "$host" "sudo '${REMOTE_BIN_DIR}/cpu-idle-pin.sh' --action ${action} --out '$(cpu_idle_facts_path "$role")' >>'${REMOTE_SCENARIO_DIR}/cpu-idle.log' 2>&1"; then
-    log "ignoring cpu-idle ${action} failure on ${role}"
+  log "cpu-idle start on ${role} (requested pinning=${CPU_IDLE_PINNING})"
+  if ! ssh_run "$host" "sudo '${REMOTE_BIN_DIR}/cpu-idle-pin.sh' --action start --pin '${CPU_IDLE_PINNING}' --out '$(cpu_idle_facts_path "$role")' >>'${REMOTE_SCENARIO_DIR}/cpu-idle.log' 2>&1"; then
+    log "ignoring cpu-idle start failure on ${role}"
   fi
 }
 
 cpu_idle_stop() {
   local host="$1"
   local role="$2"
-  [[ "$CPU_IDLE_PINNING" == "1" ]] || return 0
-  if ! ssh_run "$host" "sudo '${REMOTE_BIN_DIR}/cpu-idle-pin.sh' --action stop --out '$(cpu_idle_facts_path "$role")' >>'${REMOTE_SCENARIO_DIR}/cpu-idle.log' 2>&1"; then
+  if ! ssh_run "$host" "sudo '${REMOTE_BIN_DIR}/cpu-idle-pin.sh' --action stop --pin '${CPU_IDLE_PINNING}' --out '$(cpu_idle_facts_path "$role")' >>'${REMOTE_SCENARIO_DIR}/cpu-idle.log' 2>&1"; then
     log "ignoring cpu-idle stop failure on ${role}"
   fi
 }
