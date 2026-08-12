@@ -100,6 +100,17 @@ env_get <- function(env, key, default = NA_character_) {
   if (is.null(value) || length(value) == 0 || is.na(value) || !nzchar(value)) default else value
 }
 
+# Overlay supplementary env files onto scenario.env without letting them shadow
+# it; matches analysis/network/build_csv.R.
+merge_env <- function(base_env, ...) {
+  for (extra in list(...)) {
+    if (length(extra) == 0) next
+    new_keys <- setdiff(names(extra), names(base_env))
+    if (length(new_keys) > 0) base_env <- c(base_env, extra[new_keys])
+  }
+  base_env
+}
+
 infer_storage_filesystem <- function(explicit_value, scenario_name, mount_point = NA_character_) {
   if (!is.na(explicit_value) && nzchar(explicit_value)) return(explicit_value)
   scenario_name <- tolower(scenario_name %||% "")
@@ -306,6 +317,10 @@ scenario_fields <- c(
   "block_volume_iops", "block_volume_throughput_mbps", "storage_targets_raw", "storage_root_device",
   "storage_local_device", "storage_local_mount", "storage_local_filesystem",
   "storage_block_device", "storage_block_mount", "storage_block_filesystem",
+  "cpu_idle_pinning_requested", "cpu_idle_pinning_supported",
+  "cpu_idle_pinning_verified", "cpu_idle_pinning_reason", "cpu_idle_driver",
+  "cpu_idle_deep_entries_delta", "cpufreq_driver", "cpufreq_governor",
+  "kernel_release",
   "scenario_source_file", "storage_env_file"
 )
 
@@ -489,6 +504,20 @@ scenario_row <- function(run_id, scenario_name, scenario_env, storage_env, scena
     storage_block_device = env_get(scenario_env, "STORAGE_BLOCK_DEVICE", env_get(storage_env, "STORAGE_BLOCK_DEVICE")),
     storage_block_mount = storage_block_mount,
     storage_block_filesystem = storage_block_filesystem,
+    # CPU idle state matters here as much as on the network side: the psync
+    # queue-depth-1 profiles spend most of their time waiting, so a core that
+    # drops into a deep idle state pays exit latency on every completion.
+    # cpufreq is the separate frequency-scaling subsystem; driver = 'none' means
+    # the guest exposes no frequency control, which is distinct from NA.
+    cpu_idle_pinning_requested = env_get(scenario_env, "CPU_IDLE_PINNING"),
+    cpu_idle_pinning_supported = env_get(scenario_env, "NODE_CPU_IDLE_PINNING_SUPPORTED"),
+    cpu_idle_pinning_verified = env_get(scenario_env, "NODE_CPU_IDLE_PINNING_VERIFIED"),
+    cpu_idle_pinning_reason = env_get(scenario_env, "NODE_CPU_IDLE_PINNING_REASON"),
+    cpu_idle_driver = env_get(scenario_env, "NODE_CPU_IDLE_DRIVER"),
+    cpu_idle_deep_entries_delta = to_num(env_get(scenario_env, "NODE_CPU_IDLE_DEEP_ENTRIES_DELTA")),
+    cpufreq_driver = env_get(scenario_env, "NODE_CPUFREQ_DRIVER"),
+    cpufreq_governor = env_get(scenario_env, "NODE_CPUFREQ_GOVERNOR"),
+    kernel_release = env_get(scenario_env, "NODE_KERNEL_RELEASE"),
     scenario_source_file = file.path(scenario_dir, "scenario.env"),
     storage_env_file = file.path(scenario_dir, "storage.env"),
     stringsAsFactors = FALSE
@@ -838,7 +867,15 @@ parse_storage_run <- function(repo_root, run_id) {
 
   for (scenario_dir in scenario_dirs) {
     scenario_name <- basename(scenario_dir)
-    scenario_env <- read_env_file(file.path(scenario_dir, "scenario.env"))
+    # node-facts.env, os-tuning.env and cpu-idle-benchmark.env are written by
+    # the runner alongside scenario.env. All are absent for runs recorded before
+    # they existed, in which case the columns they feed are simply NA.
+    scenario_env <- merge_env(
+      read_env_file(file.path(scenario_dir, "scenario.env")),
+      read_env_file(file.path(scenario_dir, "node-facts.env")),
+      read_env_file(file.path(scenario_dir, "os-tuning.env")),
+      read_env_file(file.path(scenario_dir, "cpu-idle-benchmark.env"))
+    )
     storage_env <- read_env_file(file.path(scenario_dir, "storage.env"))
     scenario_rows[[length(scenario_rows) + 1]] <- scenario_row(run_id, scenario_name, scenario_env, storage_env, scenario_dir)
 

@@ -172,12 +172,29 @@ difference to the network:
 ```text
 cpu_idle_pinning_requested   what the scenario asked for
 cpu_idle_pinning_supported   0 when the instance cannot pin, with a reason
-cpu_idle_pinning_verified    1 only when no deep-state entries occurred
+cpu_idle_pinning_verified    1 only when pinning was requested and held
 cpu_idle_deep_entries_delta  deep idle entries during the run
+server_cpu_idle_*            the same fields for the server end of the pair
 ```
 
-Runs where pinning was unsupported must not be pooled with pinned runs; the
-report groups by these fields for exactly that reason.
+Capability is decided by probing the node, not by a table of instance types,
+because the same type behaves differently across kernels, images and hypervisor
+versions. Four distinct reasons are recorded: `no-cpuidle-driver`,
+`no-deep-idle-states` (a driver exists but nothing deeper than C1, the usual
+virtualised case), `no-cpu-dma-latency-device`, and
+`cpu-dma-latency-not-writable`.
+
+**The counters are snapshotted whether or not pinning was requested.** An
+unpinned scenario's `cpu_idle_deep_entries_delta` is the baseline: if it is also
+near zero, the CPU never entered a deep state anyway and pinning could not have
+changed the measurement. Without that baseline, zero deep entries on a pinned
+run is ambiguous, because a CPU that is never idle enters no deep states with or
+without a bound — so `verified = 1` is strong evidence at low offered rates and
+weak at high ones.
+
+Runs where pinning was unsupported must not be pooled with pinned runs, and a
+pair is only pinned if **both** ends were: check `server_cpu_idle_pinning_*`
+alongside the client fields.
 
 Supported instance affinity profiles:
 

@@ -67,7 +67,7 @@ run_scenario() {
   scenario_file="$(abs_path "$scenario_file")"
   require_file "$scenario_file"
 
-  unset SCENARIO_NAME PROVIDER TOFU_DIR TFVARS_FILE BENCHMARK_DIR OS_TUNING BENCHMARK_MACHINE_TYPE BENCHMARK_IMAGE_ID BLOCK_VOLUME_SIZE_GIB BLOCK_VOLUME_PERFORMANCE_CLASS BLOCK_VOLUME_TYPE BLOCK_VOLUME_IOPS BLOCK_VOLUME_THROUGHPUT_MBPS LOCAL_FILESYSTEM BLOCK_FILESYSTEM BENCHMARK_ROOT_VOLUME_SIZE_GIB BENCHMARK_ROOT_VOLUME_PERFORMANCE_CLASS SKIP SKIP_REASON
+  unset SCENARIO_NAME PROVIDER TOFU_DIR TFVARS_FILE BENCHMARK_DIR OS_TUNING BENCHMARK_MACHINE_TYPE BENCHMARK_IMAGE_ID BLOCK_VOLUME_SIZE_GIB BLOCK_VOLUME_PERFORMANCE_CLASS BLOCK_VOLUME_TYPE BLOCK_VOLUME_IOPS BLOCK_VOLUME_THROUGHPUT_MBPS LOCAL_FILESYSTEM BLOCK_FILESYSTEM BENCHMARK_ROOT_VOLUME_SIZE_GIB BENCHMARK_ROOT_VOLUME_PERFORMANCE_CLASS CPU_IDLE_PINNING SKIP SKIP_REASON
   # shellcheck disable=SC1090
   source "$scenario_file"
 
@@ -114,6 +114,13 @@ run_scenario() {
     ext4|xfs|raw) ;;
     *) die "${scenario_file}: BLOCK_FILESYSTEM must be one of: ext4, xfs, raw" ;;
   esac
+  # Orthogonal to OS_TUNING. The psync qd1 profiles are mostly waiting, so a
+  # core dropping into a deep idle state pays exit latency per completion.
+  CPU_IDLE_PINNING="${CPU_IDLE_PINNING:-0}"
+  case "$CPU_IDLE_PINNING" in
+    0|1) ;;
+    *) die "${scenario_file}: CPU_IDLE_PINNING must be 0 or 1" ;;
+  esac
   BENCHMARK_ROOT_VOLUME_SIZE_GIB="${BENCHMARK_ROOT_VOLUME_SIZE_GIB:-30}"
   BENCHMARK_ROOT_VOLUME_PERFORMANCE_CLASS="${BENCHMARK_ROOT_VOLUME_PERFORMANCE_CLASS:-}"
 
@@ -139,6 +146,7 @@ run_scenario() {
     fi
     echo "  benchmark_dir=${BENCHMARK_DIR}"
     echo "  os_tuning=${OS_TUNING}"
+    echo "  cpu_idle_pinning=${CPU_IDLE_PINNING}"
     echo "  benchmark_machine_type=${BENCHMARK_MACHINE_TYPE}"
     echo "  benchmark_image_id=${BENCHMARK_IMAGE_ID}"
     echo "  block_volume_size_gib=${BLOCK_VOLUME_SIZE_GIB}"
@@ -195,6 +203,7 @@ run_scenario() {
       --scenario-name "$SCENARIO_NAME" \
       --benchmark-dir "$BENCHMARK_DIR" \
       --os-tuning "$OS_TUNING" \
+      --cpu-idle-pinning "$CPU_IDLE_PINNING" \
       --access-mode "$ACCESS_MODE" \
       --local-filesystem "$LOCAL_FILESYSTEM" \
       --block-filesystem "$BLOCK_FILESYSTEM" \

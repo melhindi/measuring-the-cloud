@@ -122,6 +122,16 @@ BLOCK_FILESYSTEM=raw
 SKIP=0
 ```
 
+Storage scenarios also accept `CPU_IDLE_PINNING=0|1`, orthogonal to `OS_TUNING`.
+The `psync` queue-depth-1 profiles spend most of their time waiting, so a core
+that drops into a deep idle state pays exit latency on every completion — the
+same confound the network slice controls for. As there, the runner probes the
+instance, records whether pinning was possible and whether it held, and never
+silently does nothing; and it snapshots the idle counters even when pinning was
+not requested, so an unpinned scenario provides the baseline that says whether
+deep idle was being entered at all. See `network/README.md` for the recorded
+fields and the four capability reasons.
+
 `SKIP=1` skips a whole scenario during discovery and dry-run reporting.
 `BLOCK_VOLUME_SIZE_GIB=0` disables the additional benchmark block volume; the
 root volume is still provisioned as the VM boot disk.
