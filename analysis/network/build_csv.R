@@ -228,6 +228,12 @@ scenario_common_row <- function(run_id, scenario_name, scenario_env) {
     server_machine_type = env_get(scenario_env, "SERVER_MACHINE_TYPE"),
     client_availability_zone = env_get(scenario_env, "CLIENT_AVAILABILITY_ZONE"),
     server_availability_zone = env_get(scenario_env, "SERVER_AVAILABILITY_ZONE"),
+    # A reversal-control arm re-runs an earlier scenario to measure drift. It
+    # must not also contribute measurements to the comparison it audits, or that
+    # configuration is counted twice. base_scenario_name pairs it with its
+    # original.
+    is_control = grepl("__control$", scenario_name),
+    base_scenario_name = sub("__control$", "", scenario_name),
     placement_class = derive_placement_class(scenario_env),
     placement_mode = env_get(scenario_env, "PLACEMENT_MODE"),
     server_region = env_get(scenario_env, "SERVER_REGION"),
@@ -664,7 +670,7 @@ write_network_csvs <- function(repo_root = NULL, run_spec = NULL) {
 }
 
 scenario_cols <- c(
-  "run_id", "scenario_name", "provider",
+  "run_id", "scenario_name", "is_control", "base_scenario_name", "provider",
   "client_machine_type", "server_machine_type",
   "client_availability_zone", "server_availability_zone",
   "placement_class", "placement_mode", "server_region", "pair_class",

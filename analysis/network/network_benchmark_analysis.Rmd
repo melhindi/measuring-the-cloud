@@ -45,10 +45,10 @@ DBI::dbExecute(con, "drop table if exists scenarios")
 DBI::dbExecute(con, "drop table if exists iperf3")
 DBI::dbExecute(con, "drop table if exists iperf3_intervals")
 DBI::dbExecute(con, "drop table if exists sockperf")
-DBI::dbExecute(con, sprintf("create table scenarios as select * from read_csv_auto('%s')", csv_sql_path("network_scenarios.csv")))
-DBI::dbExecute(con, sprintf("create table iperf3 as select * from read_csv_auto('%s')", csv_sql_path("network_iperf3.csv")))
-DBI::dbExecute(con, sprintf("create table iperf3_intervals as select * from read_csv_auto('%s')", csv_sql_path("network_iperf3_intervals.csv")))
-DBI::dbExecute(con, sprintf("create table sockperf as select * from read_csv_auto('%s')", csv_sql_path("network_sockperf.csv")))
+DBI::dbExecute(con, sprintf("create table scenarios_all as select * from read_csv_auto('%s')", csv_sql_path("network_scenarios.csv")))
+DBI::dbExecute(con, sprintf("create table iperf3_all as select * from read_csv_auto('%s')", csv_sql_path("network_iperf3.csv")))
+DBI::dbExecute(con, sprintf("create table iperf3_intervals_all as select * from read_csv_auto('%s')", csv_sql_path("network_iperf3_intervals.csv")))
+DBI::dbExecute(con, sprintf("create table sockperf_all as select * from read_csv_auto('%s')", csv_sql_path("network_sockperf.csv")))
 
 # read_csv_auto infers a column's type from its values, so a numeric column that
 # happens to be entirely empty in this result set arrives as VARCHAR and any
@@ -69,7 +69,7 @@ ensure_numeric_columns <- function(table, cols) {
   }
 }
 
-ensure_numeric_columns("sockperf", c(
+ensure_numeric_columns("sockperf_all", c(
   "offered_mps", "achieved_mps", "burst", "reply_every",
   "msg_size_bytes", "configured_runtime_sec", "runtime_sec", "warmup_msec",
   "valid_duration_sec", "sent_messages", "received_messages",
@@ -78,11 +78,30 @@ ensure_numeric_columns("sockperf", c(
   "p99_rtt_us", "p999_rtt_us", "p9999_rtt_us", "p99999_rtt_us",
   "dropped_messages", "duplicated_messages", "out_of_order_messages"
 ))
-ensure_numeric_columns("scenarios", c(
+numeric_scenario_cols <- c(
   "primary_iface_mtu", "cpu_idle_deep_entries_delta",
   "tuning_rmem_max", "tuning_netdev_max_backlog",
-  "cpufreq_cur_freq_khz", "cpufreq_min_freq_khz", "cpufreq_max_freq_khz"
-))
+  "cpufreq_cur_freq_khz", "cpufreq_min_freq_khz", "cpufreq_max_freq_khz",
+  "server_cpu_idle_deep_entries_delta", "server_primary_iface_mtu"
+)
+# The scenario columns are also carried on every measurement row, so the same
+# coercion has to reach those tables or arithmetic on them breaks there instead.
+ensure_numeric_columns("scenarios_all", numeric_scenario_cols)
+ensure_numeric_columns("iperf3_all", numeric_scenario_cols)
+ensure_numeric_columns("iperf3_intervals_all", numeric_scenario_cols)
+ensure_numeric_columns("sockperf_all", numeric_scenario_cols)
+
+# Every analysis query below reads these views, which exclude reversal-control
+# arms. A control re-runs a scenario to measure drift; letting its rows into the
+# comparisons would count that configuration twice and pull the median toward
+# whatever the control happened to measure. The Data Quality section reads the
+# *_all tables instead, because comparing the two is the whole point of it.
+for (tbl in c("scenarios", "iperf3", "iperf3_intervals", "sockperf")) {
+  DBI::dbExecute(con, sprintf(
+    "create view %s as select * from %s_all where coalesce(is_control, false) = false",
+    tbl, tbl
+  ))
+}
 
 # network_failures.csv is written by build_csv.R alongside the measurement
 # tables. Older result directories predate it, so its absence is tolerated.
@@ -1342,6 +1361,8 @@ if (nrow(idle_grouping) == 0) {
 Two checks that decide whether anything above can be quoted.
 
 ```{r data-quality-failures}
+# Failures are reported across every arm including controls: a control that
+# could not run is itself a data-quality finding.
 fail_summary <- sql("
 select run_id, scenario_name, benchmark_name, count(*) as failed_repetitions,
        min(failure_reason) as example_reason
@@ -1356,17 +1377,86 @@ if (nrow(fail_summary) == 0) {
 }
 ```
 
+```{r data-quality-fragmentation}
+# A UDP datagram larger than one frame is split into IP fragments, and losing
+# any fragment loses the whole datagram. TCP at the same message size segments
+# cleanly with independent loss recovery. So a TCP-vs-UDP comparison above the
+# frame capacity is partly a comparison of fragmentation, and whether it applies
+# depends on the MTU of the arm -- which differs by provider and by path.
+frag <- sql("
+select scenario_name, provider, placement_class, protocol, msg_size_bytes,
+       primary_iface_mtu as client_mtu,
+       server_primary_iface_mtu as server_mtu,
+       count(*) as n
+from sockperf
+where protocol = 'udp'
+group by 1, 2, 3, 4, 5, 6, 7
+order by 1, 4, 5
+")
+if (nrow(frag) == 0) {
+  cat("No UDP sockperf rows.\n")
+} else if (all(is.na(frag$client_mtu))) {
+  cat("MTU was not recorded for these runs, so fragmentation cannot be checked.",
+      "Runs made before node-facts.env existed have no MTU; re-run to populate it.\n")
+} else {
+  # IPv4 header 20 + UDP header 8.
+  frag$frame_capacity_bytes <- frag$client_mtu - 28
+  frag$ip_fragments <- ceiling(frag$msg_size_bytes / frag$frame_capacity_bytes)
+  frag$mtu_mismatch <- !is.na(frag$server_mtu) & frag$client_mtu != frag$server_mtu
+  flagged <- frag[!is.na(frag$ip_fragments) & (frag$ip_fragments > 1 | frag$mtu_mismatch), ]
+  if (nrow(flagged) == 0) {
+    cat("Every UDP message fits in a single frame at the recorded MTU, and client and server MTUs agree.\n")
+  } else {
+    kable(flagged, caption = "UDP rows that fragment at the recorded MTU, or whose two ends disagree on MTU. Latency at these sizes is not directly comparable with TCP, nor across arms with different MTUs.")
+  }
+  cat("\nNote: this is the *interface* MTU. The path MTU can be lower, especially across regions or peered networks, and is not measured here.\n")
+}
+```
+
+```{r data-quality-within-scenario}
+# The two noise figures answer different questions and an effect has to clear
+# the right one.
+#
+#   within-scenario  repetitions of one benchmark on one provisioned pair:
+#                    same instances, same boot, minutes apart.
+#   control drift    the same scenario re-provisioned at the end of the matrix:
+#                    different instances, different hosts, hours apart.
+#
+# Because scenarios are destroyed and re-provisioned, the control includes which
+# hardware you drew. That is the figure a cross-scenario comparison must beat;
+# the within-scenario spread only bounds noise inside one provisioning.
+within <- sql("
+select scenario_name, protocol, benchmark_name,
+       count(*) as reps,
+       round(median(p50_rtt_us), 1) as median_p50,
+       round(100.0 * stddev_samp(p50_rtt_us) / nullif(avg(p50_rtt_us), 0), 1) as p50_cv_pct,
+       round(100.0 * stddev_samp(p99_rtt_us) / nullif(avg(p99_rtt_us), 0), 1) as p99_cv_pct
+from sockperf
+group by 1, 2, 3
+having count(*) > 1
+order by p50_cv_pct desc nulls last
+")
+if (nrow(within) == 0) {
+  cat("No benchmark has more than one repetition, so within-scenario noise cannot be estimated.\n")
+} else {
+  kable(head(within, 20), caption = "Within-scenario spread across repetitions (worst 20 by p50 CV). This bounds noise inside a single provisioning; it is not the bar for comparing two scenarios -- use the reversal-control drift below for that.")
+}
+```
+
 ```{r data-quality-control}
+# Reads sockperf_all, not the control-free view, and matches the suffix with
+# ends_with rather than LIKE: in SQL LIKE, '_' is a single-character wildcard, so
+# '%__control' also matches names such as 'foo-XXcontrol'.
 control_drift <- sql("
-select replace(s.scenario_name, '__control', '') as scenario,
+select s.base_scenario_name as scenario,
        s.protocol, s.benchmark_name,
-       round(median(case when s.scenario_name like '%__control' then s.p50_rtt_us end), 1) as control_p50,
-       round(median(case when s.scenario_name not like '%__control' then s.p50_rtt_us end), 1) as original_p50,
-       round(median(case when s.scenario_name like '%__control' then s.p99_rtt_us end), 1) as control_p99,
-       round(median(case when s.scenario_name not like '%__control' then s.p99_rtt_us end), 1) as original_p99
-from sockperf s
-where replace(s.scenario_name, '__control', '') in (
-  select replace(scenario_name, '__control', '') from sockperf where scenario_name like '%__control'
+       round(median(case when s.is_control then s.p50_rtt_us end), 1) as control_p50,
+       round(median(case when not s.is_control then s.p50_rtt_us end), 1) as original_p50,
+       round(median(case when s.is_control then s.p99_rtt_us end), 1) as control_p99,
+       round(median(case when not s.is_control then s.p99_rtt_us end), 1) as original_p99
+from sockperf_all s
+where s.base_scenario_name in (
+  select base_scenario_name from sockperf_all where is_control
 )
 group by 1, 2, 3
 order by 1, 2, 3
