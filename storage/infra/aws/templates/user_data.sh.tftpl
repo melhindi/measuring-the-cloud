@@ -17,47 +17,6 @@ NODE_ROLE=storage
 EOF
 chown ubuntu:ubuntu /opt/cloud-measuring/node.env
 
-cat >/opt/cloud-measuring/bin/apply-os-tuning.sh <<'TUNING'
-#!/usr/bin/env bash
-set -euo pipefail
-
-profile="$${1:-standard}"
-
-log() {
-  echo "[os-tuning][$(date --iso-8601=seconds)] $*"
-}
-
-apply_sysctl() {
-  local key="$1"
-  local value="$2"
-  local before=""
-  before="$(sysctl -n "$key" 2>/dev/null || true)"
-  log "sysctl $${key}: '$${before}' -> '$${value}'"
-  sysctl -w "$${key}=$${value}"
-}
-
-log "profile=$${profile}"
-log "kernel=$(uname -r)"
-
-case "$profile" in
-  standard)
-    log "standard profile selected; no storage tuning applied"
-    ;;
-  tuned)
-    apply_sysctl vm.dirty_background_ratio 5
-    apply_sysctl vm.dirty_ratio 20
-    apply_sysctl vm.swappiness 1
-    apply_sysctl vm.vfs_cache_pressure 50
-    apply_sysctl vm.dirty_expire_centisecs 3000
-    apply_sysctl vm.dirty_writeback_centisecs 500
-    ;;
-  *)
-    echo "unknown OS tuning profile: $${profile}" >&2
-    exit 1
-    ;;
-esac
-TUNING
-chmod +x /opt/cloud-measuring/bin/apply-os-tuning.sh
 
 root_disk() {
   local root_source root_pkname root_name
