@@ -669,10 +669,13 @@ for benchmark_file in "${benchmark_files[@]}"; do
   unset IPERF3_PROTOCOL IPERF3_PORT IPERF3_RUNTIME_SEC IPERF3_OMIT_SEC IPERF3_PARALLEL IPERF3_TCP_LENGTH IPERF3_UDP_BITRATE IPERF3_UDP_LENGTH
   unset SOCKPERF_PROTOCOL SOCKPERF_MODE SOCKPERF_PORT SOCKPERF_MSG_SIZE SOCKPERF_RUNTIME_SEC SOCKPERF_NOFILE_LIMIT
   unset SOCKPERF_MPS SOCKPERF_BURST SOCKPERF_REPLY_EVERY SOCKPERF_FULL_LOG
-  REPETITIONS=1
-  COOLDOWN_SEC=2
-  SERVER_READY_TIMEOUT_SEC=15
 
+  # Deliberately not pre-seeded here. Assigning REPETITIONS/COOLDOWN_SEC/
+  # SERVER_READY_TIMEOUT_SEC before sourcing defeats the ':=' defaults in
+  # network/scripts/benchmark_defaults.sh, which a benchmark file sources to
+  # avoid restating them -- the file would silently run one repetition. The
+  # per-tool functions below still apply their own ':-' fallbacks, so a file
+  # that sets neither behaves exactly as it did before.
   # shellcheck disable=SC1090
   source "$benchmark_file"
   validate_common_benchmark

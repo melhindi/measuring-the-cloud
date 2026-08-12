@@ -17,6 +17,7 @@ LOCAL_FILESYSTEM=""
 BLOCK_FILESYSTEM=""
 # Seconds for the per-scenario device calibration probe; 0 disables it.
 CALIBRATION_RUNTIME_SEC="20"
+CPU_IDLE_PINNING="0"
 # Repetitions that fail are recorded and skipped rather than aborting the
 # scenario; this counts them so the scenario still reports failure at the end.
 BENCHMARK_FAILURES=0
@@ -41,6 +42,7 @@ while [[ $# -gt 0 ]]; do
     --block-filesystem) BLOCK_FILESYSTEM="$2"; shift 2 ;;
     --results-root) REMOTE_RESULTS_ROOT="$2"; shift 2 ;;
     --calibration-runtime-sec) CALIBRATION_RUNTIME_SEC="$2"; shift 2 ;;
+    --cpu-idle-pinning) CPU_IDLE_PINNING="$2"; shift 2 ;;
     --benchmark) BENCHMARK_NAMES+=("$2"); shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage; exit 1 ;;
@@ -70,6 +72,10 @@ case "$BLOCK_FILESYSTEM" in
   *) die "--block-filesystem must be one of: ext4, xfs, raw" ;;
 esac
 [[ "$CALIBRATION_RUNTIME_SEC" =~ ^[0-9]+$ ]] || die "--calibration-runtime-sec must be an integer"
+case "$CPU_IDLE_PINNING" in
+  0|1) ;;
+  *) die "--cpu-idle-pinning must be 0 or 1" ;;
+esac
 
 cd "$REPO_ROOT"
 TOFU_DIR="$(abs_path "$TOFU_DIR")"
@@ -265,7 +271,26 @@ push_remote_scripts() {
   scp_to "${REPO_ROOT}/storage/remote/prepare_storage_target.sh" "$BENCHMARK_HOST" "${REMOTE_BIN_DIR}/prepare_storage_target.sh"
   scp_to "${REPO_ROOT}/common/remote/collect-node-facts.sh" "$BENCHMARK_HOST" "${REMOTE_BIN_DIR}/collect-node-facts.sh"
   scp_to "${REPO_ROOT}/common/remote/apply-os-tuning.sh" "$BENCHMARK_HOST" "${REMOTE_BIN_DIR}/apply-os-tuning.sh"
-  ssh_run "$BENCHMARK_HOST" "chmod +x '${REMOTE_BIN_DIR}/run_fio.sh' '${REMOTE_BIN_DIR}/run_benchmarks.sh' '${REMOTE_BIN_DIR}/prepare_storage_target.sh' '${REMOTE_BIN_DIR}/collect-node-facts.sh' '${REMOTE_BIN_DIR}/apply-os-tuning.sh'"
+  scp_to "${REPO_ROOT}/common/remote/cpu-idle-pin.sh" "$BENCHMARK_HOST" "${REMOTE_BIN_DIR}/cpu-idle-pin.sh"
+  ssh_run "$BENCHMARK_HOST" "chmod +x '${REMOTE_BIN_DIR}/run_fio.sh' '${REMOTE_BIN_DIR}/run_benchmarks.sh' '${REMOTE_BIN_DIR}/prepare_storage_target.sh' '${REMOTE_BIN_DIR}/collect-node-facts.sh' '${REMOTE_BIN_DIR}/apply-os-tuning.sh' '${REMOTE_BIN_DIR}/cpu-idle-pin.sh'"
+}
+
+# Idle-state control matters here for the same reason it does on the network
+# side: the psync queue-depth-1 profiles spend most of their time waiting, so a
+# core that drops into a deep state pays exit latency on every completion. As on
+# the network side this always runs, so an unpinned scenario still records the
+# baseline delta.
+cpu_idle_start() {
+  log "cpu-idle start on benchmark host (requested pinning=${CPU_IDLE_PINNING})"
+  if ! ssh_run "$BENCHMARK_HOST" "sudo '${REMOTE_BIN_DIR}/cpu-idle-pin.sh' --action start --pin '${CPU_IDLE_PINNING}' --out '${REMOTE_SCENARIO_DIR}/cpu-idle-benchmark.env' >>'${REMOTE_SCENARIO_DIR}/cpu-idle.log' 2>&1"; then
+    log "ignoring cpu-idle start failure on benchmark host"
+  fi
+}
+
+cpu_idle_stop() {
+  if ! ssh_run "$BENCHMARK_HOST" "sudo '${REMOTE_BIN_DIR}/cpu-idle-pin.sh' --action stop --pin '${CPU_IDLE_PINNING}' --out '${REMOTE_SCENARIO_DIR}/cpu-idle-benchmark.env' >>'${REMOTE_SCENARIO_DIR}/cpu-idle.log' 2>&1"; then
+    log "ignoring cpu-idle stop failure on benchmark host"
+  fi
 }
 
 discover_storage_env() {
@@ -571,6 +596,8 @@ wait_for_cloud_init benchmark
 # has to precede apply_os_tuning.
 push_remote_scripts
 apply_os_tuning benchmark
+trap cpu_idle_stop EXIT
+cpu_idle_start
 BENCHMARK_CPU_LIST="$(remote_cpu_list)"
 log "benchmark CPU list: ${BENCHMARK_CPU_LIST}"
 discover_storage_env
@@ -598,9 +625,12 @@ for benchmark_file in "${benchmark_files[@]}"; do
   unset BENCHMARK_NAME BENCHMARK_TOOL SKIP SKIP_REASON
   unset REPETITIONS COOLDOWN_SEC
   unset FIO_IOENGINE FIO_RW FIO_BS FIO_IODEPTH FIO_NUMJOBS FIO_RUNTIME_SEC FIO_DIRECT FIO_GROUP_REPORTING FIO_TIME_BASED FIO_SIZE FIO_FSYNC FIO_FDATASYNC FIO_RATE_IOPS
-  REPETITIONS=1
-  COOLDOWN_SEC=2
 
+  # Deliberately not pre-seeded here; see the same note in
+  # network/scripts/run_benchmarks.sh. Assigning REPETITIONS/COOLDOWN_SEC before
+  # sourcing defeats the ':=' defaults in benchmark_defaults.sh. Every current
+  # storage benchmark sets both explicitly so nothing changes today, but a file
+  # that relied on the defaults would silently run one repetition.
   # shellcheck disable=SC1090
   source "$benchmark_file"
   validate_common_benchmark
