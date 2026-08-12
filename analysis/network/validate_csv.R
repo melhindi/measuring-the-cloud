@@ -72,8 +72,43 @@ stop_if_not(protocol_field_check$udp_with_tcp_length == 0, "UDP iperf3 rows unex
 stop_if_not(protocol_field_check$udp_without_loss == 0, "UDP iperf3 rows unexpectedly miss lost_percent")
 stop_if_not(protocol_field_check$tcp_without_receiver_mbps == 0, "TCP iperf3 rows unexpectedly miss receiver throughput")
 
+# Scenario classification. An unclassified provider or placement means a new
+# scenario naming convention outran the parser, which silently drops those runs
+# out of every grouped comparison in the report.
+classification_check <- dbGetQuery(con, "
+select
+  sum(case when provider is null or provider = '' then 1 else 0 end) as scenarios_without_provider,
+  sum(case when placement_class is null or placement_class = '' then 1 else 0 end) as scenarios_without_placement,
+  sum(case when placement_class not in
+        ('single-az', 'co-located-single-az', 'different-host-single-az', 'multi-az', 'cross-region')
+      then 1 else 0 end) as scenarios_with_unknown_placement,
+  sum(case when pair_class is null or pair_class = '' then 1 else 0 end) as scenarios_without_pair_class,
+  sum(case when placement_class = 'cross-region'
+        and (server_region is null or server_region = '') then 1 else 0 end) as cross_region_without_region
+from scenarios
+")
+
+stop_if_not(classification_check$scenarios_without_provider == 0,
+            "Scenarios with an unrecognised provider prefix; extend detect_provider()")
+stop_if_not(classification_check$scenarios_without_placement == 0,
+            "Scenarios without a placement_class")
+stop_if_not(classification_check$scenarios_with_unknown_placement == 0,
+            "Scenarios with a placement_class outside the known set")
+stop_if_not(classification_check$scenarios_without_pair_class == 0,
+            "Scenarios without a pair_class; client/server machine types must both be recorded")
+stop_if_not(classification_check$cross_region_without_region == 0,
+            "Cross-region scenarios missing server_region")
+
 message("CSV counts")
 print(csv_counts)
+
+message("scenarios by provider / placement / pairing")
+print(dbGetQuery(con, "
+select provider, placement_class, pair_class, count(*) as n
+from scenarios
+group by 1, 2, 3
+order by 1, 2, 3
+"))
 
 message("iperf3 by placement / machine / tuning")
 print(dbGetQuery(con, "

@@ -74,8 +74,26 @@ read_env_file <- function(path) {
   stats::setNames(vals, keys)
 }
 
+# read_env_file() returns a named character vector, for which env[["missing"]]
+# raises "subscript out of bounds" rather than returning NULL. Every key queried
+# before optional fields existed happened to always be present; check names()
+# explicitly so absent keys fall back to the default instead of erroring.
 env_get <- function(env, key, default = NA_character_) {
-  if (!is.null(env[[key]]) && nzchar(env[[key]])) env[[key]] else default
+  if (is.null(env) || length(env) == 0 || is.null(names(env)) || !(key %in% names(env))) return(default)
+  value <- env[[key]]
+  if (is.null(value) || length(value) == 0 || is.na(value) || !nzchar(value)) default else value
+}
+
+# Overlay supplementary env files onto scenario.env without letting them shadow
+# it. Node facts are namespaced with NODE_, so in practice nothing collides; the
+# precedence rule just keeps scenario.env authoritative if that ever changes.
+merge_env <- function(base_env, ...) {
+  for (extra in list(...)) {
+    if (length(extra) == 0) next
+    new_keys <- setdiff(names(extra), names(base_env))
+    if (length(new_keys) > 0) base_env <- c(base_env, extra[new_keys])
+  }
+  base_env
 }
 
 to_num <- function(x) {
@@ -115,18 +133,56 @@ normalize_os_tuning <- function(x) {
 detect_provider <- function(scenario_name) {
   if (grepl("^stackit[_-]", scenario_name)) return("stackit")
   if (grepl("^aws[_-]", scenario_name)) return("aws")
+  if (grepl("^gcp[_-]", scenario_name)) return("gcp")
   NA_character_
 }
 
+# Strip the zone suffix from an availability zone to get its region.
+#   aws     us-east-1a     -> us-east-1
+#   gcp     europe-west3-a -> europe-west3
+#   stackit eu01-1         -> eu01
+region_of_zone <- function(zone) {
+  if (is.na(zone) || !nzchar(zone)) return(NA_character_)
+  if (grepl("-[a-z0-9]$", zone)) {
+    trimmed <- sub("-[a-z0-9]$", "", zone)
+    if (nzchar(trimmed)) return(trimmed)
+  }
+  if (grepl("[0-9][a-z]$", zone)) return(sub("[a-z]$", "", zone))
+  zone
+}
+
 derive_placement_class <- function(scenario_env) {
+  placement_mode <- env_get(scenario_env, "PLACEMENT_MODE")
+  server_region <- env_get(scenario_env, "SERVER_REGION")
   affinity <- env_get(scenario_env, "INSTANCE_AFFINITY")
   client_az <- env_get(scenario_env, "CLIENT_AVAILABILITY_ZONE")
   server_az <- env_get(scenario_env, "SERVER_AVAILABILITY_ZONE")
+
+  # A cross-region scenario declares itself. Only this value short-circuits, so
+  # any other PLACEMENT_MODE falls through to the availability-zone comparison
+  # that classified every run before this field was recorded.
+  if (identical(placement_mode, "cross-region")) return("cross-region")
+  if (!is.na(server_region) && nzchar(server_region)) {
+    client_region <- region_of_zone(client_az)
+    if (!is.na(client_region) && !identical(client_region, server_region)) return("cross-region")
+  }
+
   same_az <- !is.na(client_az) && !is.na(server_az) && identical(client_az, server_az)
   if (!same_az) return("multi-az")
   if (identical(affinity, "co-located")) return("co-located-single-az")
   if (identical(affinity, "different-host")) return("different-host-single-az")
   "single-az"
+}
+
+# Client and server machine types are configured independently by the runner but
+# every shipped scenario currently sets them equal. This makes the distinction an
+# explicit column so the first mixed-type run is not silently pooled with the
+# same-type pair of its client machine type.
+derive_pair_class <- function(scenario_env) {
+  client_type <- env_get(scenario_env, "CLIENT_MACHINE_TYPE")
+  server_type <- env_get(scenario_env, "SERVER_MACHINE_TYPE")
+  if (is.na(client_type) || is.na(server_type)) return(NA_character_)
+  if (identical(client_type, server_type)) "same-type" else "mixed-type"
 }
 
 get_path <- function(x, path, default = NA) {
@@ -157,6 +213,9 @@ scenario_common_row <- function(run_id, scenario_name, scenario_env) {
     client_availability_zone = env_get(scenario_env, "CLIENT_AVAILABILITY_ZONE"),
     server_availability_zone = env_get(scenario_env, "SERVER_AVAILABILITY_ZONE"),
     placement_class = derive_placement_class(scenario_env),
+    placement_mode = env_get(scenario_env, "PLACEMENT_MODE"),
+    server_region = env_get(scenario_env, "SERVER_REGION"),
+    pair_class = derive_pair_class(scenario_env),
     instance_affinity = env_get(scenario_env, "INSTANCE_AFFINITY"),
     os_tuning = normalize_os_tuning(env_get(scenario_env, "OS_TUNING")),
     access_mode = env_get(scenario_env, "ACCESS_MODE"),
@@ -164,6 +223,27 @@ scenario_common_row <- function(run_id, scenario_name, scenario_env) {
     server_private_ip = env_get(scenario_env, "SERVER_PRIVATE_IP"),
     client_cpu_list = env_get(scenario_env, "CLIENT_CPU_LIST"),
     server_cpu_list = env_get(scenario_env, "SERVER_CPU_LIST"),
+    # Read back from the node after the profile ran, so a profile that claims to
+    # tune something the kernel did not accept is visible in the data. These are
+    # what distinguish a real cross-provider "tuned" comparison from one where
+    # the profiles quietly differ.
+    tuning_congestion_control = env_get(scenario_env, "NODE_OS_TUNING_CONGESTION_CONTROL"),
+    tuning_qdisc = env_get(scenario_env, "NODE_OS_TUNING_QDISC"),
+    tuning_rmem_max = to_num(env_get(scenario_env, "NODE_OS_TUNING_RMEM_MAX")),
+    tuning_netdev_max_backlog = to_num(env_get(scenario_env, "NODE_OS_TUNING_NETDEV_BACKLOG")),
+    cpu_idle_pinning_requested = env_get(scenario_env, "CPU_IDLE_PINNING"),
+    cpu_idle_pinning_supported = env_get(scenario_env, "NODE_CPU_IDLE_PINNING_SUPPORTED"),
+    cpu_idle_pinning_verified = env_get(scenario_env, "NODE_CPU_IDLE_PINNING_VERIFIED"),
+    cpu_idle_driver = env_get(scenario_env, "NODE_CPU_IDLE_DRIVER"),
+    cpu_idle_states = env_get(scenario_env, "NODE_CPU_IDLE_STATES"),
+    cpu_idle_deep_entries_delta = to_num(env_get(scenario_env, "NODE_CPU_IDLE_DEEP_ENTRIES_DELTA")),
+    kernel_release = env_get(scenario_env, "NODE_KERNEL_RELEASE"),
+    image_id = env_get(scenario_env, "NODE_IMAGE_ID"),
+    primary_iface = env_get(scenario_env, "NODE_PRIMARY_IFACE"),
+    primary_iface_mtu = to_num(env_get(scenario_env, "NODE_PRIMARY_IFACE_MTU")),
+    iperf3_tool_version = env_get(scenario_env, "NODE_IPERF3_VERSION"),
+    sockperf_tool_version = env_get(scenario_env, "NODE_SOCKPERF_VERSION"),
+    fio_tool_version = env_get(scenario_env, "NODE_FIO_VERSION"),
     stringsAsFactors = FALSE
   )
 }
@@ -321,6 +401,18 @@ parse_sockperf_summary <- function(run_id, scenario_name, scenario_env, benchmar
   target_port <- if (is.na(target_line)) NA_real_ else to_num(sub("^.*PORT\\s*=\\s*([0-9]+).*$", "\\1", target_line, perl = TRUE))
   protocol <- tolower(env_get(benchmark_env, "SOCKPERF_PROTOCOL", if (grepl("# TCP", target_line, fixed = TRUE)) "tcp" else "udp"))
 
+  # What the client actually delivered, as opposed to what it was asked for. A
+  # rung whose achieved rate falls short of its offered rate is measuring the
+  # generator's ceiling rather than the network's, and its latency figures
+  # describe a load that was never applied.
+  sent_messages <- extract_first_num(lines, "\\[Valid Duration\\].*SentMessages=([0-9]+)")
+  valid_duration_sec <- extract_first_num(lines, "\\[Valid Duration\\]\\s+RunTime=([0-9.]+)\\s+sec")
+  achieved_mps <- if (!is.na(sent_messages) && !is.na(valid_duration_sec) && valid_duration_sec > 0) {
+    sent_messages / valid_duration_sec
+  } else {
+    NA_real_
+  }
+
   cbind(
     common_measurement_fields(run_id, scenario_name, scenario_env, benchmark_name, benchmark_env, rep, path),
     data.frame(
@@ -328,13 +420,18 @@ parse_sockperf_summary <- function(run_id, scenario_name, scenario_env, benchmar
       mode = env_get(benchmark_env, "SOCKPERF_MODE"),
       msg_size_bytes = to_num(env_get(benchmark_env, "SOCKPERF_MSG_SIZE")),
       configured_runtime_sec = to_num(env_get(benchmark_env, "SOCKPERF_RUNTIME_SEC")),
+      # under-load only; NA for ping-pong, which has no controlled offered rate.
+      offered_mps = to_num(env_get(benchmark_env, "SOCKPERF_MPS")),
+      burst = to_num(env_get(benchmark_env, "SOCKPERF_BURST")),
+      reply_every = to_num(env_get(benchmark_env, "SOCKPERF_REPLY_EVERY")),
       target_ip = target_ip,
       target_port = target_port,
       runtime_sec = extract_first_num(lines, "\\[Total Run\\]\\s+RunTime=([0-9.]+)\\s+sec"),
       warmup_msec = extract_first_num(lines, "Warm up time=([0-9.]+)\\s+msec"),
-      valid_duration_sec = extract_first_num(lines, "\\[Valid Duration\\]\\s+RunTime=([0-9.]+)\\s+sec"),
-      sent_messages = extract_first_num(lines, "\\[Valid Duration\\].*SentMessages=([0-9]+)"),
+      valid_duration_sec = valid_duration_sec,
+      sent_messages = sent_messages,
       received_messages = extract_first_num(lines, "\\[Valid Duration\\].*ReceivedMessages=([0-9]+)"),
+      achieved_mps = achieved_mps,
       avg_rtt_us = extract_first_num(lines, "avg-rtt=([0-9.]+)"),
       stddev_rtt_us = extract_first_num(lines, "std-dev=([0-9.]+)"),
       min_rtt_us = extract_first_num(lines, "<MIN> observation\\s*=\\s*([0-9.]+)"),
@@ -379,10 +476,22 @@ parse_run <- function(repo_root, run_id) {
   iperf3_rows <- list()
   iperf3_interval_rows <- list()
   sockperf_rows <- list()
+  failure_rows <- list()
 
   for (scenario_dir in scenario_dirs) {
     scenario_name <- basename(scenario_dir)
-    scenario_env <- read_env_file(file.path(scenario_dir, "scenario.env"))
+    # node-facts.env and cpu-idle.env are written by the runner alongside
+    # scenario.env. Both are absent for runs recorded before those files
+    # existed, in which case the columns they feed are simply NA.
+    scenario_env <- merge_env(
+      read_env_file(file.path(scenario_dir, "scenario.env")),
+      read_env_file(file.path(scenario_dir, "node-facts.env")),
+      read_env_file(file.path(scenario_dir, "os-tuning.env")),
+      # The client is where latency is observed, so its idle state is the one
+      # the measurement columns describe. cpu-idle-server.env is fetched too and
+      # sits alongside for inspection.
+      read_env_file(file.path(scenario_dir, "cpu-idle-client.env"))
+    )
     scenario_rows[[length(scenario_rows) + 1]] <- scenario_common_row(run_id, scenario_name, scenario_env)
 
     benchmark_dirs <- list.dirs(file.path(scenario_dir, "benchmarks"), full.names = TRUE, recursive = FALSE)
@@ -397,14 +506,51 @@ parse_run <- function(repo_root, run_id) {
 
       for (rep_dir in rep_dirs) {
         rep <- to_num(sub("^rep-", "", basename(rep_dir)))
+        status_env <- read_env_file(file.path(rep_dir, "status.env"))
+        rep_valid <- env_get(status_env, "REP_VALID")
+        rep_status <- env_get(status_env, "REP_EXIT_STATUS")
+        rep_reason <- env_get(status_env, "REP_FAILURE_REASON")
+
+        path <- if (identical(tool, "iperf3")) {
+          file.path(rep_dir, "client", "iperf3.json")
+        } else if (identical(tool, "sockperf")) {
+          file.path(rep_dir, "client", "sockperf.log")
+        } else {
+          NA_character_
+        }
+
+        # A repetition counts as failed when the runner recorded a non-zero exit
+        # or when the expected output is simply absent. Both are invisible in
+        # the measurement tables, which only ever contain rows that parsed.
+        output_missing <- is.na(path) || !file.exists(path)
+        if (identical(rep_valid, "0") || output_missing) {
+          failure_rows[[length(failure_rows) + 1]] <- cbind(
+            scenario_common_row(run_id, scenario_name, scenario_env),
+            data.frame(
+              benchmark_name = benchmark_name,
+              benchmark_tool = tool,
+              repetition = rep,
+              expected_output = if (is.na(path)) NA_character_ else path,
+              output_present = !output_missing,
+              exit_status = to_num(rep_status),
+              failure_reason = if (!is.na(rep_reason) && nzchar(rep_reason)) {
+                rep_reason
+              } else if (output_missing) {
+                "benchmark output missing"
+              } else {
+                NA_character_
+              },
+              stringsAsFactors = FALSE
+            )
+          )
+        }
+
         if (identical(tool, "iperf3")) {
-          path <- file.path(rep_dir, "client", "iperf3.json")
           if (file.exists(path)) {
             iperf3_rows[[length(iperf3_rows) + 1]] <- parse_iperf3_summary(run_id, scenario_name, scenario_env, benchmark_name, benchmark_env, rep, path)
             iperf3_interval_rows[[length(iperf3_interval_rows) + 1]] <- parse_iperf3_intervals(run_id, scenario_name, scenario_env, benchmark_name, benchmark_env, rep, path)
           }
         } else if (identical(tool, "sockperf")) {
-          path <- file.path(rep_dir, "client", "sockperf.log")
           if (file.exists(path)) {
             sockperf_rows[[length(sockperf_rows) + 1]] <- parse_sockperf_summary(run_id, scenario_name, scenario_env, benchmark_name, benchmark_env, rep, path)
           }
@@ -417,7 +563,8 @@ parse_run <- function(repo_root, run_id) {
     scenarios = bind_rows_with_schema(scenario_rows, scenario_cols),
     iperf3 = bind_rows_with_schema(iperf3_rows, iperf3_cols),
     iperf3_intervals = bind_rows_with_schema(iperf3_interval_rows, iperf3_interval_cols),
-    sockperf = bind_rows_with_schema(sockperf_rows, sockperf_cols)
+    sockperf = bind_rows_with_schema(sockperf_rows, sockperf_cols),
+    failures = bind_rows_with_schema(failure_rows, failure_cols)
   )
 }
 
@@ -455,14 +602,20 @@ write_network_csvs <- function(repo_root = NULL, run_spec = NULL) {
   iperf3 <- bind_rows_with_schema(lapply(parsed, `[[`, "iperf3"), iperf3_cols)
   iperf3_intervals <- bind_rows_with_schema(lapply(parsed, `[[`, "iperf3_intervals"), iperf3_interval_cols)
   sockperf <- bind_rows_with_schema(lapply(parsed, `[[`, "sockperf"), sockperf_cols)
+  failures <- bind_rows_with_schema(lapply(parsed, `[[`, "failures"), failure_cols)
 
   safe_write_csv(scenarios, file.path(out_dir, "network_scenarios.csv"), scenario_cols)
   safe_write_csv(iperf3, file.path(out_dir, "network_iperf3.csv"), iperf3_cols)
   safe_write_csv(iperf3_intervals, file.path(out_dir, "network_iperf3_intervals.csv"), iperf3_interval_cols)
   safe_write_csv(sockperf, file.path(out_dir, "network_sockperf.csv"), sockperf_cols)
+  safe_write_csv(failures, file.path(out_dir, "network_failures.csv"), failure_cols)
 
   message(sprintf("Wrote network CSVs to %s", out_dir))
-  message(sprintf("scenarios=%d iperf3=%d iperf3_intervals=%d sockperf=%d", nrow(scenarios), nrow(iperf3), nrow(iperf3_intervals), nrow(sockperf)))
+  message(sprintf("scenarios=%d iperf3=%d iperf3_intervals=%d sockperf=%d failures=%d",
+                  nrow(scenarios), nrow(iperf3), nrow(iperf3_intervals), nrow(sockperf), nrow(failures)))
+  if (nrow(failures) > 0) {
+    message(sprintf("NOTE: %d repetition(s) produced no usable measurement; see network_failures.csv", nrow(failures)))
+  }
   invisible(out_dir)
 }
 
@@ -470,9 +623,17 @@ scenario_cols <- c(
   "run_id", "scenario_name", "provider",
   "client_machine_type", "server_machine_type",
   "client_availability_zone", "server_availability_zone",
-  "placement_class", "instance_affinity", "os_tuning", "access_mode",
+  "placement_class", "placement_mode", "server_region", "pair_class",
+  "instance_affinity", "os_tuning", "access_mode",
   "client_private_ip", "server_private_ip",
-  "client_cpu_list", "server_cpu_list"
+  "client_cpu_list", "server_cpu_list",
+  "tuning_congestion_control", "tuning_qdisc",
+  "tuning_rmem_max", "tuning_netdev_max_backlog",
+  "cpu_idle_pinning_requested", "cpu_idle_pinning_supported",
+  "cpu_idle_pinning_verified", "cpu_idle_driver", "cpu_idle_states",
+  "cpu_idle_deep_entries_delta",
+  "kernel_release", "image_id", "primary_iface", "primary_iface_mtu",
+  "iperf3_tool_version", "sockperf_tool_version", "fio_tool_version"
 )
 
 measurement_prefix_cols <- c(
@@ -507,6 +668,8 @@ iperf3_interval_cols <- c(
 sockperf_cols <- c(
   measurement_prefix_cols,
   "protocol", "mode", "msg_size_bytes", "configured_runtime_sec",
+  "offered_mps", "burst", "reply_every",
+  "achieved_mps",
   "target_ip", "target_port",
   "runtime_sec", "warmup_msec", "valid_duration_sec",
   "sent_messages", "received_messages",
@@ -515,6 +678,12 @@ sockperf_cols <- c(
   "p99_rtt_us", "p999_rtt_us", "p9999_rtt_us", "p99999_rtt_us",
   "max_rtt_us",
   "dropped_messages", "duplicated_messages", "out_of_order_messages"
+)
+
+failure_cols <- c(
+  scenario_cols,
+  "benchmark_name", "benchmark_tool", "repetition",
+  "expected_output", "output_present", "exit_status", "failure_reason"
 )
 
 is_direct_cli_invocation <- function() {

@@ -5,4 +5,4 @@ TFVARS_FILE=network/scenarios/gcp/baseline.tfvars
 BENCHMARK_DIR=network/benchmarks/full
 OS_TUNING=standard
 INSTANCE_AFFINITY=none
-PLACEMENT_MODE=single-zone
+PLACEMENT_MODE=single-az
