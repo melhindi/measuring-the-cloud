@@ -70,7 +70,7 @@ run_scenario() {
   scenario_file="$(abs_path "$scenario_file")"
   require_file "$scenario_file"
 
-  unset SCENARIO_NAME PROVIDER TOFU_DIR TFVARS_FILE BENCHMARK_DIR OS_TUNING BENCHMARK_MACHINE_TYPE BENCHMARK_IMAGE_ID BLOCK_VOLUME_SIZE_GIB BLOCK_VOLUME_PERFORMANCE_CLASS BLOCK_VOLUME_TYPE BLOCK_VOLUME_IOPS BLOCK_VOLUME_THROUGHPUT_MBPS LOCAL_FILESYSTEM BLOCK_FILESYSTEM BENCHMARK_ROOT_VOLUME_SIZE_GIB BENCHMARK_ROOT_VOLUME_PERFORMANCE_CLASS CPU_IDLE_PINNING SKIP SKIP_REASON
+  unset SCENARIO_NAME PROVIDER TOFU_DIR TFVARS_FILE BENCHMARK_DIR OS_TUNING BENCHMARK_MACHINE_TYPE BENCHMARK_IMAGE_ID BLOCK_VOLUME_SIZE_GIB BLOCK_VOLUME_PERFORMANCE_CLASS BLOCK_VOLUME_TYPE BLOCK_VOLUME_IOPS BLOCK_VOLUME_THROUGHPUT_MBPS LOCAL_FILESYSTEM BLOCK_FILESYSTEM BENCHMARK_ROOT_VOLUME_SIZE_GIB BENCHMARK_ROOT_VOLUME_PERFORMANCE_CLASS CPU_IDLE_PINNING USE_SPOT SKIP SKIP_REASON
   # shellcheck disable=SC1090
   source "$scenario_file"
 
@@ -124,6 +124,18 @@ run_scenario() {
     0|1) ;;
     *) die "${scenario_file}: CPU_IDLE_PINNING must be 0 or 1" ;;
   esac
+  # Spot is opt-in and AWS-only: STACKIT has no spot market. Keep every arm of a
+  # comparison on one purchasing model -- spot draws from spare capacity, so it
+  # influences which physical host you land on, and host draw is not a free
+  # variable at the effect sizes measured here.
+  USE_SPOT="${USE_SPOT:-0}"
+  case "$USE_SPOT" in
+    0|1) ;;
+    *) die "${scenario_file}: USE_SPOT must be 0 or 1" ;;
+  esac
+  if [[ "$USE_SPOT" == "1" && "$PROVIDER" != "aws" ]]; then
+    die "${scenario_file}: USE_SPOT=1 is only supported for PROVIDER=aws"
+  fi
   BENCHMARK_ROOT_VOLUME_SIZE_GIB="${BENCHMARK_ROOT_VOLUME_SIZE_GIB:-30}"
   BENCHMARK_ROOT_VOLUME_PERFORMANCE_CLASS="${BENCHMARK_ROOT_VOLUME_PERFORMANCE_CLASS:-}"
 
@@ -150,6 +162,7 @@ run_scenario() {
     echo "  benchmark_dir=${BENCHMARK_DIR}"
     echo "  os_tuning=${OS_TUNING}"
     echo "  cpu_idle_pinning=${CPU_IDLE_PINNING}"
+    echo "  use_spot=${USE_SPOT}"
     echo "  benchmark_machine_type=${BENCHMARK_MACHINE_TYPE}"
     echo "  benchmark_image_id=${BENCHMARK_IMAGE_ID}"
     echo "  block_volume_size_gib=${BLOCK_VOLUME_SIZE_GIB}"
@@ -189,6 +202,7 @@ run_scenario() {
   [[ -n "$BLOCK_VOLUME_TYPE" ]] && apply_tfvar_overlay "$merged_tfvars" "benchmark_block_volume_type" "\"${BLOCK_VOLUME_TYPE}\""
   [[ -n "$BLOCK_VOLUME_IOPS" ]] && apply_tfvar_overlay "$merged_tfvars" "benchmark_block_volume_iops" "${BLOCK_VOLUME_IOPS}"
   [[ -n "$BLOCK_VOLUME_THROUGHPUT_MBPS" ]] && apply_tfvar_overlay "$merged_tfvars" "benchmark_block_volume_throughput_mbps" "${BLOCK_VOLUME_THROUGHPUT_MBPS}"
+  [[ "$PROVIDER" == "aws" ]] && apply_tfvar_overlay "$merged_tfvars" "use_spot_instances" "${USE_SPOT}"
   apply_tfvar_overlay "$merged_tfvars" "benchmark_local_filesystem" "\"${LOCAL_FILESYSTEM}\""
   apply_tfvar_overlay "$merged_tfvars" "benchmark_block_filesystem" "\"${BLOCK_FILESYSTEM}\""
   apply_tfvar_overlay "$merged_tfvars" "benchmark_root_volume_size_gib" "${BENCHMARK_ROOT_VOLUME_SIZE_GIB}"
@@ -207,6 +221,7 @@ run_scenario() {
       --benchmark-dir "$BENCHMARK_DIR" \
       --os-tuning "$OS_TUNING" \
       --cpu-idle-pinning "$CPU_IDLE_PINNING" \
+      --use-spot "$USE_SPOT" \
       --access-mode "$ACCESS_MODE" \
       --local-filesystem "$LOCAL_FILESYSTEM" \
       --block-filesystem "$BLOCK_FILESYSTEM" \

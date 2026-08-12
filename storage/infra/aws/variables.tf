@@ -206,3 +206,9 @@ variable "benchmark_storage_env_path" {
   type        = string
   default     = "/opt/cloud-measuring/state/storage.env"
 }
+
+variable "use_spot_instances" {
+  description = "Request the benchmark instance from the EC2 spot market. Off by default; the runner foundation is never spot, because losing it would orphan the benchmark VMs it is responsible for destroying."
+  type        = bool
+  default     = false
+}

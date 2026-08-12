@@ -18,6 +18,7 @@ BLOCK_FILESYSTEM=""
 # Seconds for the per-scenario device calibration probe; 0 disables it.
 CALIBRATION_RUNTIME_SEC="20"
 CPU_IDLE_PINNING="0"
+USE_SPOT="0"
 # Repetitions that fail are recorded and skipped rather than aborting the
 # scenario; this counts them so the scenario still reports failure at the end.
 BENCHMARK_FAILURES=0
@@ -43,6 +44,7 @@ while [[ $# -gt 0 ]]; do
     --results-root) REMOTE_RESULTS_ROOT="$2"; shift 2 ;;
     --calibration-runtime-sec) CALIBRATION_RUNTIME_SEC="$2"; shift 2 ;;
     --cpu-idle-pinning) CPU_IDLE_PINNING="$2"; shift 2 ;;
+    --use-spot) USE_SPOT="$2"; shift 2 ;;
     --benchmark) BENCHMARK_NAMES+=("$2"); shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage; exit 1 ;;
@@ -75,6 +77,10 @@ esac
 case "$CPU_IDLE_PINNING" in
   0|1) ;;
   *) die "--cpu-idle-pinning must be 0 or 1" ;;
+esac
+case "$USE_SPOT" in
+  0|1) ;;
+  *) die "--use-spot must be 0 or 1" ;;
 esac
 
 cd "$REPO_ROOT"

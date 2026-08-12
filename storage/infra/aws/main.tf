@@ -199,6 +199,23 @@ resource "aws_instance" "benchmark" {
     delete_on_termination = true
   }
 
+  # Spot is opt-in per scenario. "one-time" plus "terminate" is deliberate: a
+  # persistent request would relaunch the instance after an interruption and
+  # leave a standing request behind that destroy does not clean up, which for an
+  # ephemeral benchmark VM is a cost leak rather than a recovery. No max_price,
+  # so the bid is the on-demand price and interruption is driven by capacity
+  # rather than by being outbid.
+  dynamic "instance_market_options" {
+    for_each = var.use_spot_instances ? [1] : []
+    content {
+      market_type = "spot"
+      spot_options {
+        spot_instance_type             = "one-time"
+        instance_interruption_behavior = "terminate"
+      }
+    }
+  }
+
   user_data = templatefile("${path.module}/templates/user_data.sh.tftpl", {
     benchmark_local_storage         = var.benchmark_local_storage
     benchmark_local_mount_point     = var.benchmark_local_mount_point

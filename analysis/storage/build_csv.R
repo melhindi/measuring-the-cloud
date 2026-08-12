@@ -320,7 +320,7 @@ scenario_fields <- c(
   "cpu_idle_pinning_requested", "cpu_idle_pinning_supported",
   "cpu_idle_pinning_verified", "cpu_idle_pinning_reason", "cpu_idle_driver",
   "cpu_idle_deep_entries_delta", "cpufreq_driver", "cpufreq_governor",
-  "kernel_release",
+  "use_spot_requested", "purchase_model", "kernel_release",
   "scenario_source_file", "storage_env_file"
 )
 
@@ -517,6 +517,10 @@ scenario_row <- function(run_id, scenario_name, scenario_env, storage_env, scena
     cpu_idle_deep_entries_delta = to_num(env_get(scenario_env, "NODE_CPU_IDLE_DEEP_ENTRIES_DELTA")),
     cpufreq_driver = env_get(scenario_env, "NODE_CPUFREQ_DRIVER"),
     cpufreq_governor = env_get(scenario_env, "NODE_CPUFREQ_GOVERNOR"),
+    # Requested vs actual. USE_SPOT is what the scenario asked for;
+    # purchase_model is read from the instance metadata service on the node.
+    use_spot_requested = env_get(scenario_env, "USE_SPOT"),
+    purchase_model = env_get(scenario_env, "NODE_PURCHASE_MODEL"),
     kernel_release = env_get(scenario_env, "NODE_KERNEL_RELEASE"),
     scenario_source_file = file.path(scenario_dir, "scenario.env"),
     storage_env_file = file.path(scenario_dir, "storage.env"),
