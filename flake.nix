@@ -52,6 +52,11 @@
             sockperf
             fio
             iperf3
+            # Present on every benchmark node via user_data; included here so the
+            # telemetry sidecar and remote scripts can be exercised locally
+            # against the same toolset the nodes actually have.
+            sysstat
+            jq
           ];
         };
 
