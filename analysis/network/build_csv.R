@@ -103,6 +103,15 @@ merge_env <- function(base_env, ...) {
   base_env
 }
 
+# The server writes the same NODE_* keys as the client, so its facts have to be
+# renamed before they can be merged into one namespace. Client and server can
+# genuinely differ -- most obviously on a mixed-type pair, but also in MTU or
+# idle-state capability on a same-type pair whose instances were not identical.
+prefix_env <- function(env, prefix) {
+  if (length(env) == 0) return(env)
+  stats::setNames(env, paste0(prefix, names(env)))
+}
+
 to_num <- function(x) {
   suppressWarnings(as.numeric(x))
 }
@@ -257,6 +266,19 @@ scenario_common_row <- function(run_id, scenario_name, scenario_env) {
     cpufreq_cur_freq_khz = to_num(env_get(scenario_env, "NODE_CPUFREQ_CUR_FREQ_KHZ")),
     cpufreq_min_freq_khz = to_num(env_get(scenario_env, "NODE_CPUFREQ_MIN_FREQ_KHZ")),
     cpufreq_max_freq_khz = to_num(env_get(scenario_env, "NODE_CPUFREQ_MAX_FREQ_KHZ")),
+    # Server-side counterparts. A pair where the client could pin and the server
+    # could not is not a pinned measurement, and without these it would read as
+    # one. MTU is here for the same reason: an asymmetric path is a real effect
+    # that a client-only column cannot show.
+    server_cpu_idle_pinning_supported = env_get(scenario_env, "SERVER_NODE_CPU_IDLE_PINNING_SUPPORTED"),
+    server_cpu_idle_pinning_verified = env_get(scenario_env, "SERVER_NODE_CPU_IDLE_PINNING_VERIFIED"),
+    server_cpu_idle_pinning_reason = env_get(scenario_env, "SERVER_NODE_CPU_IDLE_PINNING_REASON"),
+    server_cpu_idle_driver = env_get(scenario_env, "SERVER_NODE_CPU_IDLE_DRIVER"),
+    server_cpu_idle_deep_entries_delta = to_num(env_get(scenario_env, "SERVER_NODE_CPU_IDLE_DEEP_ENTRIES_DELTA")),
+    server_cpufreq_driver = env_get(scenario_env, "SERVER_NODE_CPUFREQ_DRIVER"),
+    server_cpufreq_governor = env_get(scenario_env, "SERVER_NODE_CPUFREQ_GOVERNOR"),
+    server_kernel_release = env_get(scenario_env, "SERVER_NODE_KERNEL_RELEASE"),
+    server_primary_iface_mtu = to_num(env_get(scenario_env, "SERVER_NODE_PRIMARY_IFACE_MTU")),
     kernel_release = env_get(scenario_env, "NODE_KERNEL_RELEASE"),
     image_id = env_get(scenario_env, "NODE_IMAGE_ID"),
     primary_iface = env_get(scenario_env, "NODE_PRIMARY_IFACE"),
@@ -507,10 +529,12 @@ parse_run <- function(repo_root, run_id) {
       read_env_file(file.path(scenario_dir, "scenario.env")),
       read_env_file(file.path(scenario_dir, "node-facts.env")),
       read_env_file(file.path(scenario_dir, "os-tuning.env")),
-      # The client is where latency is observed, so its idle state is the one
-      # the measurement columns describe. cpu-idle-server.env is fetched too and
-      # sits alongside for inspection.
-      read_env_file(file.path(scenario_dir, "cpu-idle-client.env"))
+      # The client is where latency is observed, so its facts carry the unadorned
+      # column names. The server's are kept under SERVER_ so a pair whose two
+      # ends differ is visible rather than represented by the client alone.
+      read_env_file(file.path(scenario_dir, "cpu-idle-client.env")),
+      prefix_env(read_env_file(file.path(scenario_dir, "server", "cpu-idle-server.env")), "SERVER_"),
+      prefix_env(read_env_file(file.path(scenario_dir, "server", "node-facts.env")), "SERVER_")
     )
     scenario_rows[[length(scenario_rows) + 1]] <- scenario_common_row(run_id, scenario_name, scenario_env)
 
@@ -655,6 +679,11 @@ scenario_cols <- c(
   "cpufreq_driver", "cpufreq_governor", "cpufreq_available_governors",
   "cpufreq_governor_uniform", "cpufreq_cur_freq_khz",
   "cpufreq_min_freq_khz", "cpufreq_max_freq_khz",
+  "server_cpu_idle_pinning_supported", "server_cpu_idle_pinning_verified",
+  "server_cpu_idle_pinning_reason", "server_cpu_idle_driver",
+  "server_cpu_idle_deep_entries_delta",
+  "server_cpufreq_driver", "server_cpufreq_governor",
+  "server_kernel_release", "server_primary_iface_mtu",
   "kernel_release", "image_id", "primary_iface", "primary_iface_mtu",
   "iperf3_tool_version", "sockperf_tool_version", "fio_tool_version"
 )

@@ -64,6 +64,16 @@ frequency ones. Most virtualised guests expose no frequency control at all
 because it is host-managed; that case records `cpufreq_driver = none`, which is
 deliberately distinct from NA (NA means the run predates the field).
 
+Unprefixed columns describe the **client**, where latency is observed.
+`server_*` columns carry the same facts for the other end, because a pair is
+only pinned if both ends were, and MTU or idle capability can differ across a
+pair even when the machine types match.
+
+`cpu_idle_deep_entries_delta` is recorded on unpinned runs too, as the baseline
+that says whether deep idle was being entered at all. Compare a pinned arm
+against an unpinned one rather than reading `cpu_idle_pinning_verified` alone:
+on a fully busy run nothing enters deep idle regardless.
+
 ## Validate CSVs
 
 ```bash
