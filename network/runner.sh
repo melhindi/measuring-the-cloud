@@ -74,6 +74,9 @@ if [[ "${#SCENARIO_FILES[@]}" -eq 0 ]]; then
   SCENARIO_FILES+=("network/scenarios/stackit/baseline.sh")
 fi
 
+# Validate the whole selection before provisioning anything.
+preflight_scenarios "$REPO_ROOT" "${SCENARIO_FILES[@]}"
+
 run_scenario() {
   local scenario_file="$1"
   scenario_file="$(abs_path "$scenario_file")"

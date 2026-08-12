@@ -84,6 +84,65 @@ require_file() {
   [[ -f "$1" ]] || die "file not found: $1"
 }
 
+# Reject a scenario selection that cannot produce a clean result set, before
+# anything is provisioned.
+#
+# Two scenarios sharing a SCENARIO_NAME write into the same artifact directory:
+# the second overwrites the first's scenario.env and merges into its benchmark
+# tree, so the analysis attributes one configuration's measurements to another.
+# Nothing else detects this. It is easy to reach because scenario folders
+# deliberately overlap -- an 'all' folder repeats the focused folders, and the
+# provider directory contains both -- so selecting a parent directory silently
+# runs many configurations twice under one name.
+#
+# A missing tfvars aborts at that scenario instead. That is loud, but reporting
+# every one up front turns a series of restarts into a single fix.
+preflight_scenarios() {
+  local repo_root="$1"
+  shift
+
+  local -A seen_names=()
+  local -a duplicates=()
+  local -a missing_tfvars=()
+  local file meta name tfvars skip resolved
+
+  for file in "$@"; do
+    # Sourced in a child shell so scenario variables cannot leak into the runner
+    # or into the next scenario's evaluation.
+    meta="$(bash -c 'source "$1" >/dev/null 2>&1 || true; printf "%s\t%s\t%s" "${SCENARIO_NAME:-}" "${TFVARS_FILE:-}" "${SKIP:-0}"' _ "$file" 2>/dev/null || true)"
+    IFS=$'\t' read -r name tfvars skip <<<"$meta"
+
+    [[ "${skip:-0}" == "1" ]] && continue
+    [[ -n "$name" ]] || continue
+
+    if [[ -n "${seen_names[$name]:-}" ]]; then
+      duplicates+=("${name}: ${seen_names[$name]} and ${file}")
+    else
+      seen_names[$name]="$file"
+    fi
+
+    if [[ -n "$tfvars" ]]; then
+      resolved="$tfvars"
+      [[ "$resolved" == /* ]] || resolved="${repo_root}/${resolved}"
+      [[ -f "$resolved" ]] || missing_tfvars+=("${file} -> ${tfvars}")
+    fi
+  done
+
+  local failed=0
+  if [[ "${#duplicates[@]}" -gt 0 ]]; then
+    echo "ERROR: scenarios share a SCENARIO_NAME and would write to the same artifact directory:" >&2
+    printf '  %s\n' "${duplicates[@]}" >&2
+    echo "  Select one folder rather than a parent that contains overlapping sets." >&2
+    failed=1
+  fi
+  if [[ "${#missing_tfvars[@]}" -gt 0 ]]; then
+    echo "ERROR: scenarios reference a tfvars file that does not exist:" >&2
+    printf '  %s\n' "${missing_tfvars[@]}" >&2
+    failed=1
+  fi
+  [[ "$failed" -eq 0 ]] || die "preflight failed; nothing was provisioned"
+}
+
 require_dir() {
   [[ -d "$1" ]] || die "directory not found: $1"
 }
