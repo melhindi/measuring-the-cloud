@@ -32,6 +32,11 @@ bind_rows_with_schema <- function(df_list, cols) {
 }
 
 safe_write_csv <- function(df, path, cols) {
+  # See analysis/network/build_csv.R: R picks fixed or scientific notation by
+  # whichever is shorter, so a single column can mix '400000' and '4e+05'.
+  # Force fixed notation, and restore the caller's setting afterwards.
+  old <- options(scipen = 999)
+  on.exit(options(old), add = TRUE)
   write.csv(ensure_schema(df, cols), path, row.names = FALSE, na = "")
 }
 

@@ -11,16 +11,20 @@
 set -uo pipefail
 
 OUT=""
+# Overridable so the "this guest exposes no cpufreq" branch can be exercised
+# against an empty directory in tests. Production always uses the real path.
+CPU_SYSFS_ROOT="/sys/devices/system/cpu"
 
 usage() {
   cat >&2 <<USAGE
-usage: $0 --out PATH
+usage: $0 --out PATH [--cpu-sysfs-root PATH]
 USAGE
 }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --out) OUT="$2"; shift 2 ;;
+    --cpu-sysfs-root) CPU_SYSFS_ROOT="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage; exit 1 ;;
   esac
@@ -48,6 +52,48 @@ primary_iface() {
       if ($i == "dev") { print $(i + 1); exit }
     }
   }'
+}
+
+# CPU frequency scaling state.
+#
+# This is a different subsystem from the idle states cpu-idle-pin.sh handles:
+# cpufreq governs the frequency a core runs at while executing, cpuidle governs
+# what it does when it has nothing to run. Setting scaling_governor=performance
+# does not keep a core out of a deep C-state, so the two are recorded
+# separately and neither substitutes for the other.
+#
+# Most virtualised guests expose no cpufreq control at all because frequency is
+# host-managed, which is itself worth knowing: a provider whose guests can be
+# pinned to a fixed frequency and one whose guests cannot would otherwise look
+# identical in the data.
+cpufreq_facts() {
+  local cpu0="${CPU_SYSFS_ROOT}/cpu0/cpufreq"
+  if [[ ! -d "$cpu0" ]]; then
+    # An explicit marker, not an omitted key: absent would be indistinguishable
+    # from a run recorded before this field existed.
+    emit NODE_CPUFREQ_DRIVER none
+    return 0
+  fi
+
+  emit NODE_CPUFREQ_DRIVER "$(cat "${cpu0}/scaling_driver" 2>/dev/null || true)"
+  emit NODE_CPUFREQ_GOVERNOR "$(cat "${cpu0}/scaling_governor" 2>/dev/null || true)"
+  emit NODE_CPUFREQ_AVAILABLE_GOVERNORS "$(cat "${cpu0}/scaling_available_governors" 2>/dev/null || true)"
+  emit NODE_CPUFREQ_CUR_FREQ_KHZ "$(cat "${cpu0}/scaling_cur_freq" 2>/dev/null || true)"
+  emit NODE_CPUFREQ_MIN_FREQ_KHZ "$(cat "${cpu0}/scaling_min_freq" 2>/dev/null || true)"
+  emit NODE_CPUFREQ_MAX_FREQ_KHZ "$(cat "${cpu0}/scaling_max_freq" 2>/dev/null || true)"
+
+  # Benchmarks are pinned to CPUs 1..n-1, so a governor read from cpu0 alone
+  # could describe cores the measurement never ran on.
+  local gov0 uniform=1 governor_file
+  gov0="$(cat "${cpu0}/scaling_governor" 2>/dev/null || true)"
+  for governor_file in "${CPU_SYSFS_ROOT}"/cpu[0-9]*/cpufreq/scaling_governor; do
+    [[ -r "$governor_file" ]] || continue
+    if [[ "$(cat "$governor_file" 2>/dev/null || true)" != "$gov0" ]]; then
+      uniform=0
+      break
+    fi
+  done
+  emit NODE_CPUFREQ_GOVERNOR_UNIFORM "$uniform"
 }
 
 # Instance identity comes from whichever metadata service answers. Each probe is
@@ -104,6 +150,7 @@ mapfile -t identity < <(cloud_identity || true)
   emit NODE_CPU_MODEL "$(awk -F': ' '/^model name/ {print $2; exit}' /proc/cpuinfo 2>/dev/null || true)"
   emit NODE_IMAGE_ID "${identity[0]:-}"
   emit NODE_INSTANCE_TYPE "${identity[1]:-}"
+  cpufreq_facts
 
   if [[ -n "$iface" ]]; then
     emit NODE_PRIMARY_IFACE "$iface"

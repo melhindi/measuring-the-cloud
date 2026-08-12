@@ -32,6 +32,13 @@ bind_rows_with_schema <- function(df_list, cols) {
 }
 
 safe_write_csv <- function(df, path, cols) {
+  # R chooses fixed or scientific notation by whichever is shorter, so the same
+  # column can be written as '400000' in one row and '4e+05' in another, and
+  # udp_target_bitrate_bits_per_sec comes out as '1e+09'. Readers that infer
+  # types cope, but the files are also read by eye and by grep. Force fixed
+  # notation, and restore the caller's setting afterwards.
+  old <- options(scipen = 999)
+  on.exit(options(old), add = TRUE)
   write.csv(ensure_schema(df, cols), path, row.names = FALSE, na = "")
 }
 
@@ -237,6 +244,19 @@ scenario_common_row <- function(run_id, scenario_name, scenario_env) {
     cpu_idle_driver = env_get(scenario_env, "NODE_CPU_IDLE_DRIVER"),
     cpu_idle_states = env_get(scenario_env, "NODE_CPU_IDLE_STATES"),
     cpu_idle_deep_entries_delta = to_num(env_get(scenario_env, "NODE_CPU_IDLE_DEEP_ENTRIES_DELTA")),
+    # cpufreq is a separate subsystem from the cpu_idle_* fields above: it
+    # governs frequency while executing, not what an idle core does. A
+    # 'performance' governor does not keep a core out of a deep C-state, so
+    # neither column substitutes for the other. driver = 'none' means the guest
+    # exposes no frequency control at all, which is the common cloud case and is
+    # distinct from NA, which means the run predates this field.
+    cpufreq_driver = env_get(scenario_env, "NODE_CPUFREQ_DRIVER"),
+    cpufreq_governor = env_get(scenario_env, "NODE_CPUFREQ_GOVERNOR"),
+    cpufreq_available_governors = env_get(scenario_env, "NODE_CPUFREQ_AVAILABLE_GOVERNORS"),
+    cpufreq_governor_uniform = env_get(scenario_env, "NODE_CPUFREQ_GOVERNOR_UNIFORM"),
+    cpufreq_cur_freq_khz = to_num(env_get(scenario_env, "NODE_CPUFREQ_CUR_FREQ_KHZ")),
+    cpufreq_min_freq_khz = to_num(env_get(scenario_env, "NODE_CPUFREQ_MIN_FREQ_KHZ")),
+    cpufreq_max_freq_khz = to_num(env_get(scenario_env, "NODE_CPUFREQ_MAX_FREQ_KHZ")),
     kernel_release = env_get(scenario_env, "NODE_KERNEL_RELEASE"),
     image_id = env_get(scenario_env, "NODE_IMAGE_ID"),
     primary_iface = env_get(scenario_env, "NODE_PRIMARY_IFACE"),
@@ -632,6 +652,9 @@ scenario_cols <- c(
   "cpu_idle_pinning_requested", "cpu_idle_pinning_supported",
   "cpu_idle_pinning_verified", "cpu_idle_driver", "cpu_idle_states",
   "cpu_idle_deep_entries_delta",
+  "cpufreq_driver", "cpufreq_governor", "cpufreq_available_governors",
+  "cpufreq_governor_uniform", "cpufreq_cur_freq_khz",
+  "cpufreq_min_freq_khz", "cpufreq_max_freq_khz",
   "kernel_release", "image_id", "primary_iface", "primary_iface_mtu",
   "iperf3_tool_version", "sockperf_tool_version", "fio_tool_version"
 )

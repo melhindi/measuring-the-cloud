@@ -48,6 +48,22 @@ Provenance (`kernel_release`, `image_id`, `primary_iface_mtu`, tool versions) is
 collected into `node-facts.env` on each node and is NA for runs recorded before
 that file existed.
 
+### CPU frequency and idle state
+
+Two separate subsystems, recorded separately because neither substitutes for
+the other:
+
+- `cpufreq_*` — the frequency a core runs at **while executing**. Governor,
+  driver, available governors and the frequency range.
+- `cpu_idle_*` — what a core does **when it has nothing to run**, and whether
+  the runner pinned it out of deep idle states.
+
+Setting `scaling_governor=performance` does not keep a core out of a deep
+C-state, so a low-rate latency comparison needs the idle columns, not the
+frequency ones. Most virtualised guests expose no frequency control at all
+because it is host-managed; that case records `cpufreq_driver = none`, which is
+deliberately distinct from NA (NA means the run predates the field).
+
 ## Validate CSVs
 
 ```bash
