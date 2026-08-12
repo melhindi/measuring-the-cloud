@@ -607,13 +607,6 @@ write_remote_metadata
 ssh_run "$BENCHMARK_HOST" "mkdir -p '${REMOTE_SCENARIO_DIR}'"
 ssh_run "$BENCHMARK_HOST" "cp '${REMOTE_STORAGE_ENV}' '${REMOTE_SCENARIO_DIR}/storage.env'"
 
-# Characterise the devices we actually drew before measuring anything on them.
-if [[ "$CALIBRATION_RUNTIME_SEC" -gt 0 ]]; then
-  run_device_calibration
-else
-  log "device calibration probe disabled"
-fi
-
 if [[ -n "$COMMAND_LOG" ]]; then
   append_command_text "$COMMAND_LOG" "" "scenario=${SCENARIO_NAME} os_tuning=${OS_TUNING}"
 fi
@@ -647,6 +640,22 @@ for benchmark_file in "${benchmark_files[@]}"; do
   log "running benchmark ${BENCHMARK_NAME}"
   run_fio_benchmark
 done
+
+# Characterise the devices we drew, after the suite rather than before it.
+#
+# The probe writes 4k random writes with fsync over the first 256 MB of each
+# target, which is inside the region the benchmarks then use -- running it first
+# preconditioned a quarter of a 1 GiB working set and left the rest fresh.
+# Running it first bought nothing: the instance is already provisioned either
+# way, so learning that a device is slow earlier does not save any spend, and
+# the measurement it feeds is a post-hoc attribution ("was this a slow draw?")
+# rather than a gate. It therefore describes the device as the benchmarks left
+# it, consistently across scenarios.
+if [[ "$CALIBRATION_RUNTIME_SEC" -gt 0 ]]; then
+  run_device_calibration
+else
+  log "device calibration probe disabled"
+fi
 
 # Every benchmark got its chance and every artifact is on disk; the scenario is
 # still reported as failed so the run is not mistaken for a clean one.
