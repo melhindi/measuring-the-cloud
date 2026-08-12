@@ -12,8 +12,53 @@ detect_repo_root <- function() {
 repo_root <- detect_repo_root()
 args <- commandArgs(trailingOnly = TRUE)
 
-result_id <- if (length(args) >= 1 && nzchar(args[[1]])) args[[1]] else "all"
-note <- if (length(args) >= 2 && nzchar(args[[2]])) args[[2]] else NULL
+usage <- function() {
+  cat(
+    "usage: render_network_benchmark_analysis.R [RESULT_ID] [--config FILE] [--note TEXT]\n",
+    file = stderr()
+  )
+}
+
+# Flag parsing mirrors analysis/storage/render_storage_benchmark_analysis.R.
+# Bare positional arguments keep working so existing invocations are unaffected.
+result_id <- "all"
+config_file <- NULL
+note <- NULL
+positional <- character(0)
+
+i <- 1
+while (i <= length(args)) {
+  arg <- args[[i]]
+  if (arg == "--config") {
+    if (i == length(args)) {
+      usage()
+      stop("--config requires a file path")
+    }
+    config_file <- args[[i + 1]]
+    i <- i + 2
+  } else if (arg == "--note") {
+    if (i == length(args)) {
+      usage()
+      stop("--note requires text")
+    }
+    note <- args[[i + 1]]
+    i <- i + 2
+  } else if (startsWith(arg, "--")) {
+    usage()
+    stop(sprintf("unknown option: %s", arg))
+  } else {
+    positional <- c(positional, arg)
+    i <- i + 1
+  }
+}
+
+if (length(positional) >= 1 && nzchar(positional[[1]])) result_id <- positional[[1]]
+if (length(positional) >= 2 && nzchar(positional[[2]]) && is.null(note)) note <- positional[[2]]
+
+if (!is.null(config_file)) {
+  if (!grepl("^/", config_file)) config_file <- file.path(repo_root, config_file)
+  config_file <- normalizePath(config_file, mustWork = TRUE)
+}
 
 source(file.path(repo_root, "analysis", "network", "build_csv.R"), local = TRUE)
 write_network_csvs(repo_root = repo_root, run_spec = result_id)
@@ -30,7 +75,7 @@ output_file <- sprintf("network_benchmark_analysis_%s.html", result_id)
 
 rmarkdown::render(
   input = file.path(repo_root, "analysis", "network", "network_benchmark_analysis.Rmd"),
-  params = list(result_id = result_id, note = note),
+  params = list(result_id = result_id, note = note, config_file = config_file),
   output_file = output_file,
   output_dir = output_dir,
   envir = new.env(parent = globalenv())

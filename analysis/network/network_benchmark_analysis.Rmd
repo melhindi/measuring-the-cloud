@@ -3,6 +3,7 @@ title: "Network Benchmark Analysis"
 params:
   result_id: "all"
   note: null
+  config_file: null
 output:
   html_document:
     toc: true
@@ -48,6 +49,97 @@ DBI::dbExecute(con, sprintf("create table scenarios as select * from read_csv_au
 DBI::dbExecute(con, sprintf("create table iperf3 as select * from read_csv_auto('%s')", csv_sql_path("network_iperf3.csv")))
 DBI::dbExecute(con, sprintf("create table iperf3_intervals as select * from read_csv_auto('%s')", csv_sql_path("network_iperf3_intervals.csv")))
 DBI::dbExecute(con, sprintf("create table sockperf as select * from read_csv_auto('%s')", csv_sql_path("network_sockperf.csv")))
+
+# read_csv_auto infers a column's type from its values, so a numeric column that
+# happens to be entirely empty in this result set arrives as VARCHAR and any
+# arithmetic on it fails with a binder error. That is the normal state of a newly
+# added measurement before the first run that populates it. Declare the columns
+# that are numeric by contract and coerce them regardless of what was inferred.
+quote_sql_literal <- function(x) paste0("'", gsub("'", "''", x, fixed = TRUE), "'")
+
+ensure_numeric_columns <- function(table, cols) {
+  existing <- DBI::dbGetQuery(con, sprintf(
+    "select column_name, data_type from information_schema.columns where table_name = %s",
+    quote_sql_literal(table)
+  ))
+  for (col in intersect(cols, existing$column_name)) {
+    if (!identical(existing$data_type[existing$column_name == col], "DOUBLE")) {
+      DBI::dbExecute(con, sprintf('alter table %s alter column "%s" type double', table, col))
+    }
+  }
+}
+
+ensure_numeric_columns("sockperf", c(
+  "offered_mps", "achieved_mps", "burst", "reply_every",
+  "msg_size_bytes", "configured_runtime_sec", "runtime_sec", "warmup_msec",
+  "valid_duration_sec", "sent_messages", "received_messages",
+  "avg_rtt_us", "stddev_rtt_us", "min_rtt_us", "max_rtt_us",
+  "p25_rtt_us", "p50_rtt_us", "p75_rtt_us", "p90_rtt_us",
+  "p99_rtt_us", "p999_rtt_us", "p9999_rtt_us", "p99999_rtt_us",
+  "dropped_messages", "duplicated_messages", "out_of_order_messages"
+))
+ensure_numeric_columns("scenarios", c(
+  "primary_iface_mtu", "cpu_idle_deep_entries_delta",
+  "tuning_rmem_max", "tuning_netdev_max_backlog"
+))
+
+# network_failures.csv is written by build_csv.R alongside the measurement
+# tables. Older result directories predate it, so its absence is tolerated.
+failures_csv <- file.path(results_dir, "network_failures.csv")
+DBI::dbExecute(con, "drop table if exists failures")
+if (file.exists(failures_csv)) {
+  DBI::dbExecute(con, sprintf("create table failures as select * from read_csv_auto('%s')", csv_sql_path("network_failures.csv")))
+} else {
+  DBI::dbExecute(con, "create table failures (run_id varchar, scenario_name varchar, benchmark_name varchar, repetition double, failure_reason varchar)")
+}
+
+# Report constants, overridable with --config so a new provider or instance
+# family does not require editing SQL throughout this document. Mirrors
+# analysis/storage/storage_report_config.example.json.
+#
+# INCOMPLETE: the mechanism and the constants are in place and the Latency vs
+# Offered Rate and Data Quality sections are provider-agnostic, but the older
+# Placement / Instance Type / OS Tuning / Protocol sections still embed
+# 'g2a.2d' and 'g2a.120d' directly in their SQL. Those sections therefore only
+# populate for STACKIT data; for AWS or GCP result sets they render their
+# no_data placeholder rather than anything incorrect. Converting them to read
+# these constants via cfg() is mechanical follow-up, one sprintf per query.
+default_report_config <- list(
+  # Instance types used by the two placement comparisons.
+  placement_comparison_small_machine = "g2a.2d",
+  placement_comparison_large_machine = "g2a.120d",
+  # Fixed points that keep like compared with like.
+  reference_tcp_length_bytes = 131072,
+  reference_udp_length_bytes = 1492,
+  reference_udp_target_gbps = 90,
+  reference_sockperf_msg_size_bytes = 64,
+  reference_os_tuning = "standard",
+  instance_comparison_placement_class = "different-host-single-az",
+  # Ordering only; values absent from the data are dropped.
+  preferred_provider_order = c("stackit", "aws", "gcp"),
+  preferred_placement_order = c(
+    "co-located-single-az", "single-az", "different-host-single-az",
+    "multi-az", "cross-region"
+  )
+)
+
+merge_lists <- function(base, override) {
+  for (key in names(override)) base[[key]] <- override[[key]]
+  base
+}
+
+report_config <- default_report_config
+if (!is.null(params$config_file) && nzchar(params$config_file)) {
+  config_override <- jsonlite::fromJSON(params$config_file, simplifyDataFrame = TRUE)
+  unknown_keys <- setdiff(names(config_override), names(default_report_config))
+  if (length(unknown_keys) > 0) {
+    stop(sprintf("Unknown network report config keys: %s", paste(unknown_keys, collapse = ", ")))
+  }
+  report_config <- merge_lists(report_config, config_override)
+}
+
+cfg <- function(key) report_config[[key]]
+quote_sql <- function(x) as.character(DBI::dbQuoteString(con, as.character(x)))
 
 format_placement <- function(x) {
   factor(x, levels = placement_levels, labels = placement_labels[placement_levels])
@@ -1097,4 +1189,168 @@ tuning_parameters <- data.frame(
   stringsAsFactors = FALSE
 )
 kable(tuning_parameters, caption = "Network-throughput OS tuning profile")
+```
+
+## Latency vs Offered Rate
+
+Rows from `sockperf` under-load runs (`mode = 'ul'`). Ping-pong rows are excluded
+because they have no controlled offered rate: they sit at one message in flight,
+which is effectively idle, and at that operating point TCP and UDP move the same
+one packet each way. Any protocol difference has to be read off the shape of
+these curves rather than from a single point.
+
+```{r latency-rate-delivery}
+ul_any <- sql("select count(*) as n from sockperf where mode = 'ul'")
+if (ul_any$n == 0) {
+  no_data("No under-load (mode = 'ul') sockperf runs in this result set. Run network/benchmarks/latency-vs-rate.")
+} else {
+  delivery <- sql("
+    select scenario_name, placement_class, protocol, offered_mps,
+           round(avg(achieved_mps), 0) as achieved_mps,
+           round(100.0 * avg(achieved_mps) / nullif(offered_mps, 0), 1) as pct_delivered,
+           sum(dropped_messages) as dropped,
+           count(*) as n
+    from sockperf
+    where mode = 'ul' and offered_mps is not null
+    group by 1, 2, 3, 4
+    order by 1, 3, 4
+  ")
+  delivery$rung_valid <- ifelse(is.na(delivery$pct_delivered) | delivery$pct_delivered < 95,
+                                "NO - offered rate not delivered", "yes")
+  kable(delivery, caption = "Offered vs achieved rate. A rung that did not deliver its offered load measures the generator's ceiling, not the network's, and its percentiles describe a load that was never applied.")
+}
+```
+
+```{r latency-rate-curve, fig.width=14, fig.height=8}
+lat_rate <- sql("
+select placement_class, provider, protocol, offered_mps, achieved_mps,
+       msg_size_bytes, p50_rtt_us, p99_rtt_us, p999_rtt_us,
+       dropped_messages, cpu_idle_pinning_supported, cpu_idle_pinning_requested
+from sockperf
+where mode = 'ul' and offered_mps is not null
+")
+if (nrow(lat_rate) == 0) {
+  no_data("No under-load sockperf rows to plot.")
+} else {
+  # Only rungs that actually delivered their offered load are interpretable.
+  lat_rate$delivered_pct <- 100 * lat_rate$achieved_mps / lat_rate$offered_mps
+  usable <- lat_rate[!is.na(lat_rate$delivered_pct) & lat_rate$delivered_pct >= 95, ]
+  dropped_rungs <- nrow(lat_rate) - nrow(usable)
+
+  if (nrow(usable) == 0) {
+    no_data("No under-load rung delivered at least 95% of its offered rate.")
+  } else {
+    long <- rbind(
+      data.frame(usable[, c("placement_class", "provider", "protocol", "offered_mps")],
+                 percentile = "p50", value = usable$p50_rtt_us, stringsAsFactors = FALSE),
+      data.frame(usable[, c("placement_class", "provider", "protocol", "offered_mps")],
+                 percentile = "p99", value = usable$p99_rtt_us, stringsAsFactors = FALSE),
+      data.frame(usable[, c("placement_class", "provider", "protocol", "offered_mps")],
+                 percentile = "p99.9", value = usable$p999_rtt_us, stringsAsFactors = FALSE)
+    )
+    long$placement_class <- format_placement(long$placement_class)
+
+    p <- ggplot(long, aes(x = offered_mps, y = value, colour = protocol, linetype = percentile)) +
+      stat_summary(fun = median, geom = "line", linewidth = 0.9) +
+      stat_summary(fun = median, geom = "point", size = 1.8) +
+      facet_grid(provider ~ placement_class, scales = "free_y") +
+      scale_x_continuous(labels = comma) +
+      scale_y_continuous(labels = comma, limits = c(0, NA)) +
+      labs(
+        title = "Round-trip latency against offered message rate",
+        subtitle = sprintf(
+          "sockperf under-load, median across repetitions. Rungs delivering <95%% of offered load excluded (%d of %d).",
+          dropped_rungs, nrow(lat_rate)
+        ),
+        x = "Offered rate (messages/s)", y = "RTT (us)",
+        colour = "Protocol", linetype = "Percentile"
+      ) +
+      base_plot_theme()
+    p
+  }
+}
+```
+
+```{r latency-rate-protocol-delta}
+proto_delta <- sql("
+select placement_class, provider, offered_mps,
+       round(median(case when protocol = 'tcp' then p50_rtt_us end), 1) as tcp_p50,
+       round(median(case when protocol = 'udp' then p50_rtt_us end), 1) as udp_p50,
+       round(median(case when protocol = 'tcp' then p99_rtt_us end), 1) as tcp_p99,
+       round(median(case when protocol = 'udp' then p99_rtt_us end), 1) as udp_p99
+from sockperf
+where mode = 'ul' and offered_mps is not null
+  and achieved_mps >= 0.95 * offered_mps
+group by 1, 2, 3
+order by 1, 2, 3
+")
+if (nrow(proto_delta) == 0) {
+  no_data("No comparable TCP/UDP under-load rungs.")
+} else {
+  proto_delta$p50_udp_advantage_pct <- round(100 * (proto_delta$tcp_p50 - proto_delta$udp_p50) / proto_delta$tcp_p50, 1)
+  proto_delta$p99_udp_advantage_pct <- round(100 * (proto_delta$tcp_p99 - proto_delta$udp_p99) / proto_delta$tcp_p99, 1)
+  kable(proto_delta, caption = "TCP vs UDP at equal offered rate. Positive advantage means UDP is lower. Read down a column: a difference that only appears at higher rungs is the transport cost that ping-pong cannot see.")
+}
+```
+
+```{r latency-rate-idle-state}
+idle_grouping <- sql("
+select coalesce(cpu_idle_pinning_requested, '0') as pinning_requested,
+       coalesce(cpu_idle_pinning_supported, 'unknown') as pinning_supported,
+       coalesce(cpu_idle_pinning_verified, 'unknown') as pinning_verified,
+       count(distinct scenario_name) as scenarios,
+       count(*) as rows
+from sockperf
+where mode = 'ul'
+group by 1, 2, 3
+order by 1, 2, 3
+")
+if (nrow(idle_grouping) == 0) {
+  no_data("No under-load rows to group by idle-state control.")
+} else {
+  kable(idle_grouping, caption = "CPU idle-state control behind these measurements. Not every instance type exposes the knob; rows with pinning_supported = 0 have idle-exit latency in their low-rate numbers and must not be pooled with pinned rows.")
+}
+```
+
+## Data Quality
+
+Two checks that decide whether anything above can be quoted.
+
+```{r data-quality-failures}
+fail_summary <- sql("
+select run_id, scenario_name, benchmark_name, count(*) as failed_repetitions,
+       min(failure_reason) as example_reason
+from failures
+group by 1, 2, 3
+order by failed_repetitions desc, 1, 2, 3
+")
+if (nrow(fail_summary) == 0) {
+  cat("No failed repetitions recorded: every repetition produced a usable measurement.\n")
+} else {
+  kable(fail_summary, caption = "Repetitions that produced no usable measurement. These are invisible in the tables above, which contain only rows that parsed, so a benchmark can look complete while having lost most of its repetitions.")
+}
+```
+
+```{r data-quality-control}
+control_drift <- sql("
+select replace(s.scenario_name, '__control', '') as scenario,
+       s.protocol, s.benchmark_name,
+       round(median(case when s.scenario_name like '%__control' then s.p50_rtt_us end), 1) as control_p50,
+       round(median(case when s.scenario_name not like '%__control' then s.p50_rtt_us end), 1) as original_p50,
+       round(median(case when s.scenario_name like '%__control' then s.p99_rtt_us end), 1) as control_p99,
+       round(median(case when s.scenario_name not like '%__control' then s.p99_rtt_us end), 1) as original_p99
+from sockperf s
+where replace(s.scenario_name, '__control', '') in (
+  select replace(scenario_name, '__control', '') from sockperf where scenario_name like '%__control'
+)
+group by 1, 2, 3
+order by 1, 2, 3
+")
+if (nrow(control_drift) == 0) {
+  cat("No reversal control arm in this result set. Run with --reversal-control to measure how far the apparatus drifted over the matrix; without it there is no noise floor to compare effects against.\n")
+} else {
+  control_drift$p50_drift_pct <- round(100 * (control_drift$control_p50 - control_drift$original_p50) / control_drift$original_p50, 1)
+  control_drift$p99_drift_pct <- round(100 * (control_drift$control_p99 - control_drift$original_p99) / control_drift$original_p99, 1)
+  kable(control_drift, caption = "Reversal control: the same scenario re-run at the end of the matrix. This drift is the measured noise floor. An effect reported above that is smaller than the drift here has not been demonstrated.")
+}
 ```
