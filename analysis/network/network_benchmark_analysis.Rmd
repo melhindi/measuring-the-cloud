@@ -80,7 +80,8 @@ ensure_numeric_columns("sockperf", c(
 ))
 ensure_numeric_columns("scenarios", c(
   "primary_iface_mtu", "cpu_idle_deep_entries_delta",
-  "tuning_rmem_max", "tuning_netdev_max_backlog"
+  "tuning_rmem_max", "tuning_netdev_max_backlog",
+  "cpufreq_cur_freq_khz", "cpufreq_min_freq_khz", "cpufreq_max_freq_khz"
 ))
 
 # network_failures.csv is written by build_csv.R alongside the measurement
@@ -96,14 +97,6 @@ if (file.exists(failures_csv)) {
 # Report constants, overridable with --config so a new provider or instance
 # family does not require editing SQL throughout this document. Mirrors
 # analysis/storage/storage_report_config.example.json.
-#
-# INCOMPLETE: the mechanism and the constants are in place and the Latency vs
-# Offered Rate and Data Quality sections are provider-agnostic, but the older
-# Placement / Instance Type / OS Tuning / Protocol sections still embed
-# 'g2a.2d' and 'g2a.120d' directly in their SQL. Those sections therefore only
-# populate for STACKIT data; for AWS or GCP result sets they render their
-# no_data placeholder rather than anything incorrect. Converting them to read
-# these constants via cfg() is mechanical follow-up, one sprintf per query.
 default_report_config <- list(
   # Instance types used by the two placement comparisons.
   placement_comparison_small_machine = "g2a.2d",
@@ -140,6 +133,24 @@ if (!is.null(params$config_file) && nzchar(params$config_file)) {
 
 cfg <- function(key) report_config[[key]]
 quote_sql <- function(x) as.character(DBI::dbQuoteString(con, as.character(x)))
+
+# Bound once so every query below reads the same value and a --config override
+# reaches all of them. Strings go through quote_sql; numbers are interpolated
+# directly. Anything comparing against these must use sprintf rather than a
+# literal, or the override silently applies to only part of the report.
+small_machine <- cfg("placement_comparison_small_machine")
+large_machine <- cfg("placement_comparison_large_machine")
+ref_os_tuning <- cfg("reference_os_tuning")
+ref_placement <- cfg("instance_comparison_placement_class")
+ref_tcp_length_bytes <- cfg("reference_tcp_length_bytes")
+ref_udp_length_bytes <- cfg("reference_udp_length_bytes")
+ref_udp_target_gbps <- cfg("reference_udp_target_gbps")
+ref_msg_size_bytes <- cfg("reference_sockperf_msg_size_bytes")
+
+q_small <- quote_sql(small_machine)
+q_large <- quote_sql(large_machine)
+q_tuning <- quote_sql(ref_os_tuning)
+q_placement <- quote_sql(ref_placement)
 
 format_placement <- function(x) {
   factor(x, levels = placement_levels, labels = placement_labels[placement_levels])
@@ -361,12 +372,12 @@ filter_policy <- data.frame(
     "Latency message-size impact"
   ),
   default_filter = c(
-    "protocol = tcp; tcp_length_bytes = 131072; stream count and OS tuning are separated by facets where relevant",
-    "protocol = udp; broad comparisons use udp_length_bytes = 1492; UDP target rate and stream count are fixed or shown explicitly",
-    "protocol = udp; client_machine_type = g2a.120d; udp_target_bitrate_gbit_per_sec = 90; packet size is shown on the x-axis",
-    "sockperf; comparable placement pairs only; os_tuning is split into standard/tuned subsections; message sizes are limited to 64 B and 8192 B",
-    "sockperf; placement_class = different-host-single-az; msg_size_bytes = 64; protocol and OS tuning are separated by facets",
-    "sockperf; client_machine_type = g2a.120d; os_tuning = standard; message size is shown on the x-axis"
+    sprintf("protocol = tcp; tcp_length_bytes = %s; stream count and OS tuning are separated by facets where relevant", ref_tcp_length_bytes),
+    sprintf("protocol = udp; broad comparisons use udp_length_bytes = %s; UDP target rate and stream count are fixed or shown explicitly", ref_udp_length_bytes),
+    sprintf("protocol = udp; client_machine_type = %s; udp_target_bitrate_gbit_per_sec = %s; packet size is shown on the x-axis", large_machine, ref_udp_target_gbps),
+    sprintf("sockperf; comparable placement pairs only; os_tuning is split into standard/tuned subsections; message sizes are limited to %s B and 8192 B", ref_msg_size_bytes),
+    sprintf("sockperf; placement_class = %s; msg_size_bytes = %s; protocol and OS tuning are separated by facets", ref_placement, ref_msg_size_bytes),
+    sprintf("sockperf; client_machine_type = %s; os_tuning = %s; message size is shown on the x-axis", large_machine, ref_os_tuning)
   )
 )
 kable(filter_policy, caption = "Default filters used to keep network comparisons comparable")
@@ -403,34 +414,42 @@ kable(benchmark_coverage, caption = "Benchmark repetition coverage")
 
 # Throughput
 
-Throughput plots use `network_iperf3.csv`, one row per iperf3 repetition. The primary metric is receiver throughput in Mbit/s. Broad TCP comparisons fix `tcp_length_bytes = 131072` because this is the only TCP payload size currently present. Broad UDP comparisons fix `udp_length_bytes = 1492`; the dedicated packet-size section compares `1492` and `9000` bytes. UDP throughput must be interpreted together with loss and jitter.
+```{r throughput-intro, results='asis'}
+cat(sprintf(
+"Throughput plots use `network_iperf3.csv`, one row per iperf3 repetition. The primary metric is receiver throughput in Mbit/s. Broad TCP comparisons fix `tcp_length_bytes = %s`. Broad UDP comparisons fix `udp_length_bytes = %s`; the dedicated packet-size section compares the packet sizes actually present. UDP throughput must be interpreted together with loss and jitter.\n",
+  ref_tcp_length_bytes, ref_udp_length_bytes
+))
+```
 
 ## Placement Impact
 
-Two placement comparisons are currently meaningful:
+Two placement comparisons, on the instance types named by
+`placement_comparison_small_machine` and `placement_comparison_large_machine`:
 
-- `g2a.2d`: co-located single-AZ vs different-host single-AZ.
-- `g2a.120d`: different-host single-AZ vs multi-AZ.
+```{r placement-intro, results='asis'}
+cat(sprintf("- `%s`: co-located single-AZ vs different-host single-AZ.\n", small_machine))
+cat(sprintf("- `%s`: different-host single-AZ vs multi-AZ.\n", large_machine))
+```
 
-```{r tcp-placement-g2a2d, fig.width=13, fig.height=6.5}
-tcp_place_2d <- sql("
+```{r tcp-placement-small, fig.width=13, fig.height=6.5}
+tcp_place_small <- sql(sprintf("
 select placement_class, os_tuning, parallel_streams,
        receiver_mbit_per_sec
 from iperf3
 where protocol = 'tcp'
-  and tcp_length_bytes = 131072
-  and client_machine_type = 'g2a.2d'
+  and tcp_length_bytes = %s
+  and client_machine_type = %s
   and placement_class in ('co-located-single-az', 'different-host-single-az')
-")
-if (nrow(tcp_place_2d) == 0) {
-  no_data("No comparable g2a.2d TCP placement data.")
+", ref_tcp_length_bytes, q_small))
+if (nrow(tcp_place_small) == 0) {
+  no_data(sprintf("No comparable %s TCP placement data.", small_machine))
 } else {
-  tcp_place_2d$placement_class <- format_placement(tcp_place_2d$placement_class)
-  tcp_place_2d$stream_label <- paste0(tcp_place_2d$parallel_streams, " stream(s)")
+  tcp_place_small$placement_class <- format_placement(tcp_place_small$placement_class)
+  tcp_place_small$stream_label <- paste0(tcp_place_small$parallel_streams, " stream(s)")
   box_jitter(
-    tcp_place_2d, "placement_class", "receiver_mbit_per_sec", "placement_class",
-    "TCP throughput: co-located vs different-host (g2a.2d)",
-    "Fixed tcp_length_bytes = 131072; facets keep stream count and OS tuning separate.",
+    tcp_place_small, "placement_class", "receiver_mbit_per_sec", "placement_class",
+    sprintf("TCP throughput: co-located vs different-host (%s)", small_machine),
+    sprintf("Fixed tcp_length_bytes = %s; facets keep stream count and OS tuning separate.", ref_tcp_length_bytes),
     "Receiver throughput (Mbit/s)",
     facet_cols = c("os_tuning", "stream_label")
   ) +
@@ -439,25 +458,25 @@ if (nrow(tcp_place_2d) == 0) {
 }
 ```
 
-```{r tcp-placement-g2a120d, fig.width=13, fig.height=6.5}
-tcp_place_120d <- sql("
+```{r tcp-placement-large, fig.width=13, fig.height=6.5}
+tcp_place_large <- sql(sprintf("
 select placement_class, os_tuning, parallel_streams,
        receiver_mbit_per_sec
 from iperf3
 where protocol = 'tcp'
-  and tcp_length_bytes = 131072
-  and client_machine_type = 'g2a.120d'
+  and tcp_length_bytes = %s
+  and client_machine_type = %s
   and placement_class in ('different-host-single-az', 'multi-az')
-")
-if (nrow(tcp_place_120d) == 0) {
-  no_data("No comparable g2a.120d TCP placement data.")
+", ref_tcp_length_bytes, q_large))
+if (nrow(tcp_place_large) == 0) {
+  no_data(sprintf("No comparable %s TCP placement data.", large_machine))
 } else {
-  tcp_place_120d$placement_class <- format_placement(tcp_place_120d$placement_class)
-  tcp_place_120d$stream_label <- paste0(tcp_place_120d$parallel_streams, " stream(s)")
+  tcp_place_large$placement_class <- format_placement(tcp_place_large$placement_class)
+  tcp_place_large$stream_label <- paste0(tcp_place_large$parallel_streams, " stream(s)")
   box_jitter(
-    tcp_place_120d, "placement_class", "receiver_mbit_per_sec", "placement_class",
-    "TCP throughput: single-AZ vs multi-AZ (g2a.120d)",
-    "Fixed tcp_length_bytes = 131072; facets keep stream count and OS tuning separate.",
+    tcp_place_large, "placement_class", "receiver_mbit_per_sec", "placement_class",
+    sprintf("TCP throughput: single-AZ vs multi-AZ (%s)", large_machine),
+    sprintf("Fixed tcp_length_bytes = %s; facets keep stream count and OS tuning separate.", ref_tcp_length_bytes),
     "Receiver throughput (Mbit/s)",
     facet_cols = c("os_tuning", "stream_label")
   ) +
@@ -467,7 +486,7 @@ if (nrow(tcp_place_120d) == 0) {
 ```
 
 ```{r udp-placement-summary}
-udp_placement_summary <- sql("
+udp_placement_summary <- sql(sprintf("
 select placement_class, client_machine_type, os_tuning,
        udp_target_bitrate_gbit_per_sec as target_gbps,
        udp_length_bytes, parallel_streams,
@@ -477,26 +496,31 @@ select placement_class, client_machine_type, os_tuning,
        round(median(jitter_ms), 4) as median_jitter_ms
 from iperf3
 where protocol = 'udp'
-  and udp_length_bytes = 1492
+  and udp_length_bytes = %s
 group by 1, 2, 3, 4, 5, 6
 order by placement_class, client_machine_type, os_tuning, target_gbps, udp_length_bytes, parallel_streams
-")
-kable(udp_placement_summary, caption = "UDP throughput, loss, and jitter by placement and benchmark parameters; fixed udp_length_bytes = 1492")
+", ref_udp_length_bytes))
+kable(udp_placement_summary, caption = sprintf("UDP throughput, loss, and jitter by placement and benchmark parameters; fixed udp_length_bytes = %s", ref_udp_length_bytes))
 ```
 
 ## Instance Type Impact
 
-Instance type comparisons fix placement to `different-host-single-az` to avoid mixing unrelated placement classes. Current data supports this comparison across `g2a.2d`, `g2a.8d`, and `g2a.120d`.
+```{r instance-intro, results='asis'}
+cat(sprintf(
+  "Instance type comparisons fix placement to `%s` to avoid mixing unrelated placement classes. Instance types are whatever the result set contains.\n",
+  ref_placement
+))
+```
 
 ```{r tcp-instance-impact, fig.width=13, fig.height=6.5}
-tcp_instance <- sql("
+tcp_instance <- sql(sprintf("
 select placement_class, client_machine_type, os_tuning, parallel_streams,
        receiver_mbit_per_sec
 from iperf3
 where protocol = 'tcp'
-  and tcp_length_bytes = 131072
-  and placement_class = 'different-host-single-az'
-")
+  and tcp_length_bytes = %s
+  and placement_class = %s
+", ref_tcp_length_bytes, q_placement))
 if (nrow(tcp_instance) == 0) {
   no_data("No comparable TCP instance type data.")
 } else {
@@ -516,7 +540,7 @@ if (nrow(tcp_instance) == 0) {
     facet_grid(os_tuning ~ stream_label) +
     labs(
       title = "TCP throughput by instance type",
-      subtitle = "Filtered to different-host single-AZ and tcp_length_bytes = 131072.",
+      subtitle = sprintf("Filtered to %s and tcp_length_bytes = %s.", ref_placement, ref_tcp_length_bytes),
       x = NULL, y = "Receiver throughput (Mbit/s)", fill = "Instance type"
     ) +
     base_plot_theme()
@@ -526,15 +550,15 @@ if (nrow(tcp_instance) == 0) {
 ```
 
 ```{r udp-instance-impact, fig.width=13, fig.height=6.5}
-udp_instance <- sql("
+udp_instance <- sql(sprintf("
 select placement_class, client_machine_type, os_tuning, parallel_streams,
        receiver_mbit_per_sec, lost_percent
 from iperf3
 where protocol = 'udp'
-  and udp_length_bytes = 1492
-  and placement_class = 'different-host-single-az'
-  and udp_target_bitrate_gbit_per_sec = 90
-")
+  and udp_length_bytes = %s
+  and placement_class = %s
+  and udp_target_bitrate_gbit_per_sec = %s
+", ref_udp_length_bytes, q_placement, ref_udp_target_gbps))
 if (nrow(udp_instance) == 0) {
   no_data("No comparable UDP instance type data.")
 } else {
@@ -554,7 +578,7 @@ if (nrow(udp_instance) == 0) {
     facet_grid(os_tuning ~ stream_label) +
     labs(
       title = "UDP throughput by instance type",
-      subtitle = "Filtered to different-host single-AZ, udp_target_bitrate_gbit_per_sec = 90, and udp_length_bytes = 1492.",
+      subtitle = sprintf("Filtered to %s, udp_target_bitrate_gbit_per_sec = %s, and udp_length_bytes = %s.", ref_placement, ref_udp_target_gbps, ref_udp_length_bytes),
       x = NULL, y = "Receiver throughput (Mbit/s)", fill = "Instance type"
     ) +
     base_plot_theme()
@@ -578,9 +602,10 @@ throughput_tuning <- delta_table(
   c("parallel_streams", "tcp_length_bytes", "udp_length_bytes", "udp_target_gbit_per_sec"),
   c("parallel_streams", "tcp_length_bytes", "udp_length_bytes", "udp_target_gbit_per_sec"),
   lower_is_better = FALSE,
-  where_clause = "receiver_mbit_per_sec is not null
-                  and ((protocol = 'tcp' and tcp_length_bytes = 131072)
-                       or (protocol = 'udp' and udp_length_bytes = 1492))"
+  where_clause = sprintf("receiver_mbit_per_sec is not null
+                  and ((protocol = 'tcp' and tcp_length_bytes = %s)
+                       or (protocol = 'udp' and udp_length_bytes = %s))",
+                         ref_tcp_length_bytes, ref_udp_length_bytes)
 )
 kable(throughput_tuning, caption = "OS tuning impact on iperf3 receiver throughput; paired by explicit benchmark parameter columns")
 ```
@@ -590,14 +615,14 @@ kable(throughput_tuning, caption = "OS tuning impact on iperf3 receiver throughp
 TCP and UDP have different benchmark semantics, so this section emphasizes protocol-specific behavior rather than treating them as equivalent.
 
 ```{r tcp-stream-impact, fig.width=12, fig.height=6}
-tcp_stream <- sql("
+tcp_stream <- sql(sprintf("
 select placement_class, client_machine_type, os_tuning, parallel_streams,
        receiver_mbit_per_sec
 from iperf3
 where protocol = 'tcp'
-  and tcp_length_bytes = 131072
-  and client_machine_type = 'g2a.120d'
-")
+  and tcp_length_bytes = %s
+  and client_machine_type = %s
+", ref_tcp_length_bytes, q_large))
 if (nrow(tcp_stream) == 0) {
   no_data("No TCP data.")
 } else {
@@ -617,7 +642,7 @@ if (nrow(tcp_stream) == 0) {
     facet_grid(placement_class ~ os_tuning) +
     labs(
       title = "TCP stream count impact",
-      subtitle = "Filtered to client_machine_type = 'g2a.120d' and tcp_length_bytes = 131072; placement and OS tuning are separated by facets.",
+      subtitle = sprintf("Filtered to client_machine_type = '%s' and tcp_length_bytes = %s; placement and OS tuning are separated by facets.", large_machine, ref_tcp_length_bytes),
       x = NULL, y = "Receiver throughput (Mbit/s)", fill = NULL
     ) +
     base_plot_theme()
@@ -627,16 +652,16 @@ if (nrow(tcp_stream) == 0) {
 ```
 
 ```{r udp-throughput-loss, fig.width=14, fig.height=7}
-udp_loss <- sql("
+udp_loss <- sql(sprintf("
 select placement_class, client_machine_type, os_tuning,
        concat(cast(udp_target_bitrate_gbit_per_sec as varchar), ' Gbit/s, ',
               cast(parallel_streams as varchar), ' stream(s)') as udp_case,
        receiver_mbit_per_sec, lost_percent
 from iperf3
 where protocol = 'udp'
-  and udp_length_bytes = 1492
-  and client_machine_type = 'g2a.120d'
-")
+  and udp_length_bytes = %s
+  and client_machine_type = %s
+", ref_udp_length_bytes, q_large))
 if (nrow(udp_loss) == 0) {
   no_data("No UDP data.")
 } else {
@@ -655,7 +680,7 @@ if (nrow(udp_loss) == 0) {
     facet_grid(placement_class ~ os_tuning, scales = "free_x", space = "free_x") +
     labs(
       title = "UDP packet loss by target rate",
-      subtitle = "Filtered to client_machine_type = 'g2a.120d' and udp_length_bytes = 1492; packet-size effects are shown separately.",
+      subtitle = sprintf("Filtered to client_machine_type = '%s' and udp_length_bytes = %s; packet-size effects are shown separately.", large_machine, ref_udp_length_bytes),
       x = NULL, y = "Lost packets (%)", fill = "Placement"
     ) +
     base_plot_theme() +
@@ -666,7 +691,7 @@ if (nrow(udp_loss) == 0) {
 ```
 
 ```{r udp-jitter-table}
-udp_jitter <- sql("
+udp_jitter <- sql(sprintf("
 select placement_class, client_machine_type, os_tuning,
        udp_target_bitrate_gbit_per_sec as target_gbps,
        udp_length_bytes, parallel_streams,
@@ -675,12 +700,12 @@ select placement_class, client_machine_type, os_tuning,
        round(max(jitter_ms), 4) as max_jitter_ms
 from iperf3
 where protocol = 'udp'
-  and udp_length_bytes = 1492
-  and client_machine_type = 'g2a.120d'
+  and udp_length_bytes = %s
+  and client_machine_type = %s
 group by 1, 2, 3, 4, 5, 6
 order by placement_class, client_machine_type, os_tuning, target_gbps, udp_length_bytes, parallel_streams
-")
-kable(udp_jitter, caption = "UDP jitter summary; filtered to client_machine_type = 'g2a.120d' and fixed udp_length_bytes = 1492")
+", ref_udp_length_bytes, q_large))
+kable(udp_jitter, caption = sprintf("UDP jitter summary; filtered to client_machine_type = '%s' and fixed udp_length_bytes = %s", large_machine, ref_udp_length_bytes))
 ```
 
 ## Packet And Message Size Impact
@@ -702,14 +727,14 @@ kable(tcp_size_summary, caption = "TCP payload-size coverage. Current data has o
 ```
 
 ```{r udp-packet-size-impact, fig.width=13, fig.height=8.5}
-udp_size <- sql("
+udp_size <- sql(sprintf("
 select placement_class, client_machine_type, os_tuning, parallel_streams,
        udp_length_bytes, receiver_mbit_per_sec, lost_percent
 from iperf3
 where protocol = 'udp'
-  and udp_target_bitrate_gbit_per_sec = 90
-  and client_machine_type = 'g2a.120d'
-")
+  and udp_target_bitrate_gbit_per_sec = %s
+  and client_machine_type = %s
+", ref_udp_target_gbps, q_large))
 if (nrow(udp_size) == 0 || length(unique(udp_size$udp_length_bytes)) < 2) {
   no_data("No comparable UDP packet-size data with at least two packet sizes.")
 } else {
@@ -730,7 +755,7 @@ if (nrow(udp_size) == 0 || length(unique(udp_size$udp_length_bytes)) < 2) {
     facet_grid(placement_class + os_tuning ~ stream_label) +
     labs(
       title = "UDP throughput by packet size",
-      subtitle = "Filtered to g2a.120d and 90 Gbit/s target rate; placement, tuning, and stream count are separated.",
+      subtitle = sprintf("Filtered to %s and %s Gbit/s target rate; placement, tuning, and stream count are separated.", large_machine, ref_udp_target_gbps),
       x = "UDP packet size", y = "Receiver throughput (Mbit/s)", fill = "Packet size"
     ) +
     base_plot_theme()
@@ -777,12 +802,12 @@ As with throughput, placement comparisons use comparable subsets.
 ### Standard OS Tuning
 
 ```{r latency-placement-g2a2d-standard, fig.width=14, fig.height=8}
-lat_place_2d_standard <- sql("
+lat_place_2d_standard <- sql(sprintf("
 with base as (
   select placement_class, os_tuning, protocol, msg_size_bytes,
          avg_rtt_us, p50_rtt_us, p99_rtt_us, p999_rtt_us
   from sockperf
-  where client_machine_type = 'g2a.2d'
+  where client_machine_type = %s
     and placement_class in ('co-located-single-az', 'different-host-single-az')
     and msg_size_bytes in (64, 8192)
     and os_tuning = 'standard'
@@ -794,9 +819,9 @@ union all
 select placement_class, os_tuning, protocol, msg_size_bytes, 'p99' as metric, p99_rtt_us as latency_us from base
 union all
 select placement_class, os_tuning, protocol, msg_size_bytes, 'p99.9' as metric, p999_rtt_us as latency_us from base
-")
+", q_small))
 if (nrow(lat_place_2d_standard) == 0) {
-  no_data("No comparable g2a.2d latency placement data for standard OS tuning.")
+  no_data(sprintf("No comparable %s latency placement data for standard OS tuning.", small_machine))
 } else {
   lat_place_2d_standard$placement_class <- format_placement(lat_place_2d_standard$placement_class)
   lat_place_2d_standard$metric <- factor(lat_place_2d_standard$metric, levels = c("avg", "p50", "p99", "p99.9"))
@@ -814,7 +839,7 @@ if (nrow(lat_place_2d_standard) == 0) {
     geom_jitter(width = 0.12, alpha = 0.55, size = 1.3) +
     facet_grid(metric ~ msg_label, scales = "free_y") +
     labs(
-      title = "Latency: co-located vs different-host (g2a.2d)",
+      title = sprintf("Latency: co-located vs different-host (%s)", small_machine),
       subtitle = "Filtered to os_tuning = 'standard'; message sizes limited to 64 B and 8192 B.",
       x = NULL, y = "RTT (us)", fill = NULL
     ) +
@@ -826,12 +851,12 @@ if (nrow(lat_place_2d_standard) == 0) {
 ```
 
 ```{r latency-placement-g2a120d-standard, fig.width=14, fig.height=8}
-lat_place_120d_standard <- sql("
+lat_place_120d_standard <- sql(sprintf("
 with base as (
   select placement_class, os_tuning, protocol, msg_size_bytes,
          avg_rtt_us, p50_rtt_us, p99_rtt_us, p999_rtt_us
   from sockperf
-  where client_machine_type = 'g2a.120d'
+  where client_machine_type = %s
     and placement_class in ('different-host-single-az', 'multi-az')
     and msg_size_bytes in (64, 8192)
     and os_tuning = 'standard'
@@ -843,9 +868,9 @@ union all
 select placement_class, os_tuning, protocol, msg_size_bytes, 'p99' as metric, p99_rtt_us as latency_us from base
 union all
 select placement_class, os_tuning, protocol, msg_size_bytes, 'p99.9' as metric, p999_rtt_us as latency_us from base
-")
+", q_large))
 if (nrow(lat_place_120d_standard) == 0) {
-  no_data("No comparable g2a.120d latency placement data for standard OS tuning.")
+  no_data(sprintf("No comparable %s latency placement data for standard OS tuning.", large_machine))
 } else {
   lat_place_120d_standard$placement_class <- format_placement(lat_place_120d_standard$placement_class)
   lat_place_120d_standard$metric <- factor(lat_place_120d_standard$metric, levels = c("avg", "p50", "p99", "p99.9"))
@@ -863,7 +888,7 @@ if (nrow(lat_place_120d_standard) == 0) {
     geom_jitter(width = 0.12, alpha = 0.55, size = 1.3) +
     facet_grid(metric ~ msg_label, scales = "free_y") +
     labs(
-      title = "Latency: single-AZ vs multi-AZ (g2a.120d)",
+      title = sprintf("Latency: single-AZ vs multi-AZ (%s)", large_machine),
       subtitle = "Filtered to os_tuning = 'standard'; message sizes limited to 64 B and 8192 B.",
       x = NULL, y = "RTT (us)", fill = NULL
     ) +
@@ -877,12 +902,12 @@ if (nrow(lat_place_120d_standard) == 0) {
 ### Tuned OS Tuning
 
 ```{r latency-placement-g2a2d-tuned, fig.width=14, fig.height=8}
-lat_place_2d_tuned <- sql("
+lat_place_2d_tuned <- sql(sprintf("
 with base as (
   select placement_class, os_tuning, protocol, msg_size_bytes,
          avg_rtt_us, p50_rtt_us, p99_rtt_us, p999_rtt_us
   from sockperf
-  where client_machine_type = 'g2a.2d'
+  where client_machine_type = %s
     and placement_class in ('co-located-single-az', 'different-host-single-az')
     and msg_size_bytes in (64, 8192)
     and os_tuning = 'tuned'
@@ -894,9 +919,9 @@ union all
 select placement_class, os_tuning, protocol, msg_size_bytes, 'p99' as metric, p99_rtt_us as latency_us from base
 union all
 select placement_class, os_tuning, protocol, msg_size_bytes, 'p99.9' as metric, p999_rtt_us as latency_us from base
-")
+", q_small))
 if (nrow(lat_place_2d_tuned) == 0) {
-  no_data("No comparable g2a.2d latency placement data for tuned OS tuning.")
+  no_data(sprintf("No comparable %s latency placement data for tuned OS tuning.", small_machine))
 } else {
   lat_place_2d_tuned$placement_class <- format_placement(lat_place_2d_tuned$placement_class)
   lat_place_2d_tuned$metric <- factor(lat_place_2d_tuned$metric, levels = c("avg", "p50", "p99", "p99.9"))
@@ -914,7 +939,7 @@ if (nrow(lat_place_2d_tuned) == 0) {
     geom_jitter(width = 0.12, alpha = 0.55, size = 1.3) +
     facet_grid(metric ~ msg_label, scales = "free_y") +
     labs(
-      title = "Latency: co-located vs different-host (g2a.2d)",
+      title = sprintf("Latency: co-located vs different-host (%s)", small_machine),
       subtitle = "Filtered to os_tuning = 'tuned'; message sizes limited to 64 B and 8192 B.",
       x = NULL, y = "RTT (us)", fill = NULL
     ) +
@@ -926,12 +951,12 @@ if (nrow(lat_place_2d_tuned) == 0) {
 ```
 
 ```{r latency-placement-g2a120d-tuned, fig.width=14, fig.height=8}
-lat_place_120d_tuned <- sql("
+lat_place_120d_tuned <- sql(sprintf("
 with base as (
   select placement_class, os_tuning, protocol, msg_size_bytes,
          avg_rtt_us, p50_rtt_us, p99_rtt_us, p999_rtt_us
   from sockperf
-  where client_machine_type = 'g2a.120d'
+  where client_machine_type = %s
     and placement_class in ('different-host-single-az', 'multi-az')
     and msg_size_bytes in (64, 8192)
     and os_tuning = 'tuned'
@@ -943,9 +968,9 @@ union all
 select placement_class, os_tuning, protocol, msg_size_bytes, 'p99' as metric, p99_rtt_us as latency_us from base
 union all
 select placement_class, os_tuning, protocol, msg_size_bytes, 'p99.9' as metric, p999_rtt_us as latency_us from base
-")
+", q_large))
 if (nrow(lat_place_120d_tuned) == 0) {
-  no_data("No comparable g2a.120d latency placement data for tuned OS tuning.")
+  no_data(sprintf("No comparable %s latency placement data for tuned OS tuning.", large_machine))
 } else {
   lat_place_120d_tuned$placement_class <- format_placement(lat_place_120d_tuned$placement_class)
   lat_place_120d_tuned$metric <- factor(lat_place_120d_tuned$metric, levels = c("avg", "p50", "p99", "p99.9"))
@@ -963,7 +988,7 @@ if (nrow(lat_place_120d_tuned) == 0) {
     geom_jitter(width = 0.12, alpha = 0.55, size = 1.3) +
     facet_grid(metric ~ msg_label, scales = "free_y") +
     labs(
-      title = "Latency: single-AZ vs multi-AZ (g2a.120d)",
+      title = sprintf("Latency: single-AZ vs multi-AZ (%s)", large_machine),
       subtitle = "Filtered to os_tuning = 'tuned'; message sizes limited to 64 B and 8192 B.",
       x = NULL, y = "RTT (us)", fill = NULL
     ) +
@@ -977,31 +1002,31 @@ if (nrow(lat_place_120d_tuned) == 0) {
 ## Instance Type Impact
 
 ```{r latency-instance-impact, fig.width=14, fig.height=8.5}
-lat_instance <- sql("
+lat_instance <- sql(sprintf("
 select placement_class, client_machine_type, os_tuning, protocol, msg_size_bytes,
        avg_rtt_us, p50_rtt_us, p99_rtt_us
 from sockperf
-where placement_class = 'different-host-single-az'
-  and msg_size_bytes = 64
-")
+where placement_class = %s
+  and msg_size_bytes = %s
+", q_placement, ref_msg_size_bytes))
 if (nrow(lat_instance) == 0) {
   no_data("No comparable latency instance type data.")
 } else {
   lat_instance$placement_class <- format_placement(lat_instance$placement_class)
-  lat_instance_long <- sql("
+  lat_instance_long <- sql(sprintf("
     with base as (
       select placement_class, client_machine_type, os_tuning, protocol, msg_size_bytes,
              avg_rtt_us, p50_rtt_us, p99_rtt_us
       from sockperf
-      where placement_class = 'different-host-single-az'
-        and msg_size_bytes = 64
+      where placement_class = %s
+        and msg_size_bytes = %s
     )
     select placement_class, client_machine_type, os_tuning, protocol, msg_size_bytes, 'avg' as metric, avg_rtt_us as latency_us from base
     union all
     select placement_class, client_machine_type, os_tuning, protocol, msg_size_bytes, 'p50' as metric, p50_rtt_us as latency_us from base
     union all
     select placement_class, client_machine_type, os_tuning, protocol, msg_size_bytes, 'p99' as metric, p99_rtt_us as latency_us from base
-  ")
+  ", q_placement, ref_msg_size_bytes))
   lat_instance_long$metric <- factor(lat_instance_long$metric, levels = c("avg", "p50", "p99"))
   lat_instance_annotation <- build_box_median_annotation(
     lat_instance_long,
@@ -1044,30 +1069,30 @@ kable(latency_tuning, caption = "OS tuning impact on sockperf p99 latency; paire
 ## Protocol And Message Size Impact
 
 ```{r latency-message-size, fig.width=14, fig.height=7}
-lat_msg <- sql("
+lat_msg <- sql(sprintf("
 select placement_class, os_tuning, protocol, msg_size_bytes,
        p50_rtt_us, p99_rtt_us, p999_rtt_us
 from sockperf
-where os_tuning = 'standard'
-  and client_machine_type = 'g2a.120d'
-")
+where os_tuning = %s
+  and client_machine_type = %s
+", q_tuning, q_large))
 if (nrow(lat_msg) == 0) {
-  no_data("No sockperf data for os_tuning = 'standard' and client_machine_type = 'g2a.120d'.")
+  no_data(sprintf("No sockperf data for os_tuning = '%s' and client_machine_type = '%s'.", ref_os_tuning, large_machine))
 } else {
-  lat_msg_long <- sql("
+  lat_msg_long <- sql(sprintf("
     with base as (
       select placement_class, os_tuning, protocol, msg_size_bytes,
              p50_rtt_us, p99_rtt_us, p999_rtt_us
       from sockperf
-      where os_tuning = 'standard'
-        and client_machine_type = 'g2a.120d'
+      where os_tuning = %s
+        and client_machine_type = %s
     )
     select placement_class, os_tuning, protocol, msg_size_bytes, 'p50' as metric, p50_rtt_us as latency_us from base
     union all
     select placement_class, os_tuning, protocol, msg_size_bytes, 'p99' as metric, p99_rtt_us as latency_us from base
     union all
     select placement_class, os_tuning, protocol, msg_size_bytes, 'p99.9' as metric, p999_rtt_us as latency_us from base
-  ")
+  ", q_tuning, q_large))
   lat_msg_long$placement_class <- format_placement(lat_msg_long$placement_class)
   lat_msg_long$metric <- factor(lat_msg_long$metric, levels = c("p50", "p99", "p99.9"))
   lat_msg_long$msg_size_label <- factor(lat_msg_long$msg_size_bytes)
@@ -1084,7 +1109,7 @@ if (nrow(lat_msg) == 0) {
     facet_grid(metric ~ placement_class, scales = "free_y") +
     labs(
       title = "Latency by message size and protocol",
-      subtitle = "Filtered to os_tuning = 'standard' and client_machine_type = 'g2a.120d'; placement is separated by facets.",
+      subtitle = sprintf("Filtered to os_tuning = '%s' and client_machine_type = '%s'; placement is separated by facets.", ref_os_tuning, large_machine),
       x = "Message size (bytes)", y = "RTT (us)", fill = "Protocol"
     ) +
     base_plot_theme()
