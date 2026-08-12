@@ -32,8 +32,21 @@ Useful options:
 --access-mode MODE       public or private SSH control path
 --destroy MODE           always, success, or never
 --continue-on-error      continue with later scenarios after a failure
+--reversal-control       re-run the first scenario at the end as <name>__control
+--collect-telemetry      sample mpstat/iostat/nstat/ss during each repetition
 --dry-run                print the resolved plan without provisioning
 ```
+
+`--reversal-control` is how a long matrix detects that its arms were not
+comparable in time. The difference between the control arm and its original is
+the measured noise floor; an effect smaller than that drift has not been
+demonstrated. The report compares them automatically under **Data Quality**.
+
+A failed repetition no longer aborts the scenario. It is recorded in
+`rep-N/status.env`, the remaining benchmarks still run, and the scenario is
+reported as failed at the end. Failed and missing repetitions appear in
+`network_failures.csv`, without which a run that lost half its repetitions looks
+identical to a complete one with fewer rows.
 
 ## Dedicated Runner
 
@@ -131,6 +144,40 @@ standard             no network tuning beyond the base image
 network-throughput   BBR/fq, larger socket buffers, larger backlogs, and
                      best-effort NIC ring/tx queue tuning
 ```
+
+Profiles are defined once in `common/remote/apply-os-tuning.sh` and shipped to
+the nodes the same way `run_iperf.sh` is. They were previously duplicated inside
+each provider's `user_data` template, which is how the GCP profile came to apply
+five sysctls where AWS and STACKIT applied fifteen. The values a node actually
+accepted are read back into `os-tuning.env` and surface as `tuning_*` columns, so
+a profile that silently means something different on one provider is visible in
+the data rather than only in code review.
+
+### CPU idle-state control
+
+`CPU_IDLE_PINNING=1` in a scenario holds the CPU out of deep idle states for the
+run, via `/dev/cpu_dma_latency`. It is orthogonal to `OS_TUNING`, so it can be
+crossed with `network-throughput` rather than replacing it.
+
+Idle-exit latency is a large, rate-dependent addition to measured latency —
+roughly +171 µs at ~1k msg/s falling to ~0 at high packet rate, which is bigger
+than the same-AZ round trip. It is therefore a confound for any low-rate latency
+comparison across instance types or providers.
+
+**Not every instance type exposes the control.** The runner always probes,
+records the outcome, and verifies it against cpuidle entry counters; it never
+silently does nothing. Check these columns before attributing a low-rate
+difference to the network:
+
+```text
+cpu_idle_pinning_requested   what the scenario asked for
+cpu_idle_pinning_supported   0 when the instance cannot pin, with a reason
+cpu_idle_pinning_verified    1 only when no deep-state entries occurred
+cpu_idle_deep_entries_delta  deep idle entries during the run
+```
+
+Runs where pinning was unsupported must not be pooled with pinned runs; the
+report groups by these fields for exactly that reason.
 
 Supported instance affinity profiles:
 

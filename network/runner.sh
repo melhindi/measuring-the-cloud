@@ -13,6 +13,16 @@ DESTROY_MODE="always"
 CONTINUE_ON_ERROR=0
 DRY_RUN=0
 ACCESS_MODE="public"
+# Re-run the first executed scenario at the end of the matrix under a __control
+# label. The difference between the two is the drift of the apparatus over the
+# run, which is the noise floor any reported effect has to clear. A long matrix
+# has no other way to detect that its arms were not comparable in time.
+REVERSAL_CONTROL=0
+FIRST_EXECUTED_SCENARIO=""
+SCENARIO_NAME_SUFFIX=""
+# Sample mpstat/iostat/nstat/ss during each repetition. Off by default: it is a
+# small but real extra load on the machine being measured.
+COLLECT_TELEMETRY=0
 RUN_ID="run-$(date +%Y%m%d-%H%M%S)"
 LOCAL_RUN_DIR=""
 LOCAL_LAUNCHER_LOG=""
@@ -20,7 +30,7 @@ LOCAL_COMMAND_LOG=""
 
 usage() {
   cat >&2 <<USAGE
-usage: $0 [--scenario FILE ... | --scenario-dir DIR] [--benchmark NAME ...] [--out DIR] [--destroy always|success|never] [--continue-on-error] [--dry-run] [--access-mode public|private]
+usage: $0 [--scenario FILE ... | --scenario-dir DIR] [--benchmark NAME ...] [--out DIR] [--destroy always|success|never] [--continue-on-error] [--dry-run] [--reversal-control] [--collect-telemetry] [--access-mode public|private]
 USAGE
 }
 
@@ -33,6 +43,8 @@ while [[ $# -gt 0 ]]; do
     --destroy) DESTROY_MODE="$2"; shift 2 ;;
     --continue-on-error) CONTINUE_ON_ERROR=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
+    --reversal-control) REVERSAL_CONTROL=1; shift ;;
+    --collect-telemetry) COLLECT_TELEMETRY=1; shift ;;
     --access-mode) ACCESS_MODE="$2"; shift 2 ;;
     --run-id) RUN_ID="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
@@ -67,7 +79,7 @@ run_scenario() {
   scenario_file="$(abs_path "$scenario_file")"
   require_file "$scenario_file"
 
-  unset SCENARIO_NAME PROVIDER TOFU_DIR TFVARS_FILE BENCHMARK_DIR PLACEMENT_MODE OS_TUNING INSTANCE_AFFINITY CLIENT_MACHINE_TYPE SERVER_MACHINE_TYPE CLIENT_AVAILABILITY_ZONE SERVER_AVAILABILITY_ZONE SERVER_REGION ENABLE_TIER1_NETWORKING SKIP SKIP_REASON
+  unset SCENARIO_NAME PROVIDER TOFU_DIR TFVARS_FILE BENCHMARK_DIR PLACEMENT_MODE OS_TUNING INSTANCE_AFFINITY CLIENT_MACHINE_TYPE SERVER_MACHINE_TYPE CLIENT_AVAILABILITY_ZONE SERVER_AVAILABILITY_ZONE SERVER_REGION ENABLE_TIER1_NETWORKING CPU_IDLE_PINNING SKIP SKIP_REASON
   # shellcheck disable=SC1090
   source "$scenario_file"
 
@@ -88,6 +100,14 @@ run_scenario() {
 
   [[ -n "${SCENARIO_NAME:-}" ]] || die "${scenario_file}: SCENARIO_NAME is required"
   [[ "$SCENARIO_NAME" =~ ^[A-Za-z0-9._-]+$ ]] || die "${scenario_file}: SCENARIO_NAME contains unsafe characters"
+  # The control arm is the same scenario under a distinct name so it lands in its
+  # own artifact directory and appears as its own row in the analysis.
+  if [[ -n "$SCENARIO_NAME_SUFFIX" ]]; then
+    SCENARIO_NAME="${SCENARIO_NAME}${SCENARIO_NAME_SUFFIX}"
+  fi
+  if [[ -z "$FIRST_EXECUTED_SCENARIO" ]]; then
+    FIRST_EXECUTED_SCENARIO="$scenario_file"
+  fi
   case "${PROVIDER:-}" in
     stackit|aws|gcp) ;;
     *) die "${scenario_file}: PROVIDER must be one of: stackit, aws, gcp" ;;
@@ -108,6 +128,13 @@ run_scenario() {
   case "$INSTANCE_AFFINITY" in
     none|co-located|different-host) ;;
     *) die "${scenario_file}: INSTANCE_AFFINITY must be one of: none, co-located, different-host" ;;
+  esac
+  # Orthogonal to OS_TUNING rather than another value of it, so CPU idle
+  # behaviour can be crossed with the network profiles instead of replacing one.
+  CPU_IDLE_PINNING="${CPU_IDLE_PINNING:-0}"
+  case "$CPU_IDLE_PINNING" in
+    0|1) ;;
+    *) die "${scenario_file}: CPU_IDLE_PINNING must be 0 or 1" ;;
   esac
   if [[ -n "$CLIENT_MACHINE_TYPE" || -n "$SERVER_MACHINE_TYPE" || -n "$CLIENT_AVAILABILITY_ZONE" || -n "$SERVER_AVAILABILITY_ZONE" ]]; then
     [[ -n "$CLIENT_MACHINE_TYPE" && -n "$SERVER_MACHINE_TYPE" && -n "$CLIENT_AVAILABILITY_ZONE" && -n "$SERVER_AVAILABILITY_ZONE" ]] || die "${scenario_file}: client/server machine types and availability zones must be set together"
@@ -137,6 +164,7 @@ run_scenario() {
     echo "  placement_mode=${PLACEMENT_MODE:-}"
     echo "  os_tuning=${OS_TUNING}"
     echo "  instance_affinity=${INSTANCE_AFFINITY}"
+    echo "  cpu_idle_pinning=${CPU_IDLE_PINNING}"
     [[ -n "$CLIENT_MACHINE_TYPE" ]] && echo "  client_machine_type=${CLIENT_MACHINE_TYPE}"
     [[ -n "$SERVER_MACHINE_TYPE" ]] && echo "  server_machine_type=${SERVER_MACHINE_TYPE}"
     [[ -n "$CLIENT_AVAILABILITY_ZONE" ]] && echo "  client_availability_zone=${CLIENT_AVAILABILITY_ZONE}"
@@ -192,6 +220,8 @@ run_scenario() {
       --benchmark-dir "$BENCHMARK_DIR" \
       --os-tuning "$OS_TUNING" \
       --instance-affinity "$INSTANCE_AFFINITY" \
+      --cpu-idle-pinning "$CPU_IDLE_PINNING" \
+      --collect-telemetry "$COLLECT_TELEMETRY" \
       --access-mode "$ACCESS_MODE" \
       ${SERVER_REGION:+--server-region "$SERVER_REGION"} \
       ${PLACEMENT_MODE:+--placement-mode "$PLACEMENT_MODE"} \
@@ -274,6 +304,22 @@ for scenario in "${SCENARIO_FILES[@]}"; do
     fi
   fi
 done
+
+if [[ "$REVERSAL_CONTROL" -eq 1 ]]; then
+  if [[ -z "$FIRST_EXECUTED_SCENARIO" ]]; then
+    log "reversal control requested but no scenario executed; skipping"
+  elif [[ "${#SCENARIO_FILES[@]}" -lt 2 ]]; then
+    log "reversal control requested for a single scenario; skipping (nothing to bracket)"
+  else
+    log "running reversal control: re-running $(basename "$FIRST_EXECUTED_SCENARIO") as __control"
+    SCENARIO_NAME_SUFFIX="__control"
+    if ! run_scenario "$FIRST_EXECUTED_SCENARIO"; then
+      overall_rc=1
+    fi
+    SCENARIO_NAME_SUFFIX=""
+    log "compare the __control arm against its original before quoting any per-arm difference"
+  fi
+fi
 
 if [[ "$DRY_RUN" -eq 1 ]]; then
   log "dry run complete"

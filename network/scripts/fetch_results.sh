@@ -82,6 +82,15 @@ rsync -az -e "${SSH_REMOTE_CMD}" \
   "${SSH_USER}@${SERVER_HOST}:${REMOTE_SCENARIO_DIR}/node-meta.log" \
   "${LOCAL_SCENARIO_DIR}/server/node-meta.log" || true
 rsync -az -e "${SSH_REMOTE_CMD}" \
+  "${SSH_USER}@${SERVER_HOST}:${REMOTE_SCENARIO_DIR}/node-facts.env" \
+  "${LOCAL_SCENARIO_DIR}/server/node-facts.env" || true
+rsync -az -e "${SSH_REMOTE_CMD}" \
+  "${SSH_USER}@${SERVER_HOST}:${REMOTE_SCENARIO_DIR}/cpu-idle-server.env" \
+  "${LOCAL_SCENARIO_DIR}/server/cpu-idle-server.env" || true
+rsync -az -e "${SSH_REMOTE_CMD}" \
+  "${SSH_USER}@${SERVER_HOST}:${REMOTE_SCENARIO_DIR}/os-tuning.env" \
+  "${LOCAL_SCENARIO_DIR}/server/os-tuning.env" || true
+rsync -az -e "${SSH_REMOTE_CMD}" \
   "${SSH_USER}@${SERVER_HOST}:${REMOTE_SCENARIO_DIR}/benchmarks/" \
   "${LOCAL_SCENARIO_DIR}/benchmarks/" || true
 
