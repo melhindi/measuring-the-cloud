@@ -98,8 +98,15 @@ cpufreq_facts() {
 
 # Instance identity comes from whichever metadata service answers. Each probe is
 # capped with a short timeout so an unreachable endpoint costs ~1s, not a hang.
+# Instance identity, including whether this is a spot instance.
+#
+# The purchase model is read from the metadata service rather than from the
+# Terraform input, so it reports what the instance actually is. Spot draws from
+# spare capacity and therefore influences which physical host you land on, so a
+# comparison whose arms span both models has an uncontrolled variable in it --
+# which is only detectable if the model is recorded per node.
 cloud_identity() {
-  local token image instance
+  local token image instance purchase
 
   # AWS IMDSv2, falling back to IMDSv1 for images that still allow it.
   token="$(curl -s -m 1 -X PUT 'http://169.254.169.254/latest/api/token' \
@@ -109,30 +116,44 @@ cloud_identity() {
       'http://169.254.169.254/latest/meta-data/ami-id' 2>/dev/null || true)"
     instance="$(curl -s -m 1 -H "X-aws-ec2-metadata-token: ${token}" \
       'http://169.254.169.254/latest/meta-data/instance-type' 2>/dev/null || true)"
+    # "spot" or "on-demand".
+    purchase="$(curl -s -m 1 -H "X-aws-ec2-metadata-token: ${token}" \
+      'http://169.254.169.254/latest/meta-data/instance-life-cycle' 2>/dev/null || true)"
   else
     image="$(curl -s -m 1 'http://169.254.169.254/latest/meta-data/ami-id' 2>/dev/null || true)"
     instance="$(curl -s -m 1 'http://169.254.169.254/latest/meta-data/instance-type' 2>/dev/null || true)"
+    purchase="$(curl -s -m 1 'http://169.254.169.254/latest/meta-data/instance-life-cycle' 2>/dev/null || true)"
   fi
 
-  # GCP.
+  # GCP. Spot and legacy preemptible VMs both report preemptible = TRUE.
   if [[ -z "$image" ]]; then
     image="$(curl -s -m 1 -H 'Metadata-Flavor: Google' \
       'http://metadata.google.internal/computeMetadata/v1/instance/image' 2>/dev/null || true)"
     instance="$(curl -s -m 1 -H 'Metadata-Flavor: Google' \
       'http://metadata.google.internal/computeMetadata/v1/instance/machine-type' 2>/dev/null || true)"
+    local preemptible
+    preemptible="$(curl -s -m 1 -H 'Metadata-Flavor: Google' \
+      'http://metadata.google.internal/computeMetadata/v1/instance/scheduling/preemptible' 2>/dev/null || true)"
+    case "${preemptible^^}" in
+      TRUE) purchase="spot" ;;
+      FALSE) purchase="on-demand" ;;
+    esac
   fi
 
-  # OpenStack (STACKIT).
+  # OpenStack (STACKIT). No spot market exists, so anything here is on-demand.
   if [[ -z "$image" ]]; then
     local meta
     meta="$(curl -s -m 1 'http://169.254.169.254/openstack/latest/meta_data.json' 2>/dev/null || true)"
     if [[ -n "$meta" ]] && command -v jq >/dev/null 2>&1; then
       image="$(printf '%s' "$meta" | jq -r '.image_id // empty' 2>/dev/null || true)"
       instance="$(printf '%s' "$meta" | jq -r '.flavor // .meta.flavor // empty' 2>/dev/null || true)"
+      [[ -n "$image" ]] && purchase="on-demand"
     fi
   fi
 
-  printf '%s\n%s\n' "${image:-}" "${instance:-}"
+  # Explicit rather than omitted: "unknown" means no metadata service answered,
+  # which is different from the field not existing for that run.
+  printf '%s\n%s\n%s\n' "${image:-}" "${instance:-}" "${purchase:-unknown}"
 }
 
 iface="$(primary_iface || true)"
@@ -150,6 +171,7 @@ mapfile -t identity < <(cloud_identity || true)
   emit NODE_CPU_MODEL "$(awk -F': ' '/^model name/ {print $2; exit}' /proc/cpuinfo 2>/dev/null || true)"
   emit NODE_IMAGE_ID "${identity[0]:-}"
   emit NODE_INSTANCE_TYPE "${identity[1]:-}"
+  emit NODE_PURCHASE_MODEL "${identity[2]:-unknown}"
   cpufreq_facts
 
   if [[ -n "$iface" ]]; then
