@@ -18,6 +18,12 @@ SIZE=""
 CPU_LIST=""
 FSYNC="0"
 FDATASYNC="0"
+# Rate limiting. 0 means unlimited, i.e. the saturation measurement this suite
+# has always made. A non-zero value turns the run into a latency-at-known-load
+# measurement instead, which is the only way to see where the knee is rather
+# than only how high the ceiling is.
+RATE_IOPS="0"
+RATE_BYTES=""
 
 default_cpu_list() {
   local n
@@ -31,7 +37,7 @@ default_cpu_list() {
 
 usage() {
   cat >&2 <<USAGE
-usage: $0 (--mount-point PATH | --device PATH) --out-dir PATH [--name NAME] [--ioengine NAME] [--rw MODE] [--bs SIZE] [--iodepth N] [--numjobs N] [--runtime-sec N] [--direct 0|1] [--group-reporting 0|1] [--time-based 0|1] [--size SIZE] [--cpu-list LIST] [--fsync N] [--fdatasync N]
+usage: $0 (--mount-point PATH | --device PATH) --out-dir PATH [--name NAME] [--ioengine NAME] [--rw MODE] [--bs SIZE] [--iodepth N] [--numjobs N] [--runtime-sec N] [--direct 0|1] [--group-reporting 0|1] [--time-based 0|1] [--size SIZE] [--cpu-list LIST] [--fsync N] [--fdatasync N] [--rate-iops N] [--rate SIZE]
 USAGE
 }
 
@@ -54,6 +60,8 @@ while [[ $# -gt 0 ]]; do
     --cpu-list) CPU_LIST="$2"; shift 2 ;;
     --fsync) FSYNC="$2"; shift 2 ;;
     --fdatasync) FDATASYNC="$2"; shift 2 ;;
+    --rate-iops) RATE_IOPS="$2"; shift 2 ;;
+    --rate) RATE_BYTES="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage; exit 1 ;;
   esac
@@ -72,6 +80,15 @@ fi
 [[ "$FDATASYNC" =~ ^[0-9]+$ ]] || { echo "--fdatasync must be an integer" >&2; exit 1; }
 if [[ "$FSYNC" != "0" && "$FDATASYNC" != "0" ]]; then
   echo "--fsync and --fdatasync cannot both be non-zero" >&2
+  exit 1
+fi
+[[ "$RATE_IOPS" =~ ^[0-9]+$ ]] || { echo "--rate-iops must be an integer" >&2; exit 1; }
+if [[ -n "$RATE_BYTES" && ! "$RATE_BYTES" =~ ^[0-9]+[kKmMgG]?$ ]]; then
+  echo "--rate must be a size with optional k/m/g suffix" >&2
+  exit 1
+fi
+if [[ "$RATE_IOPS" != "0" && -n "$RATE_BYTES" ]]; then
+  echo "--rate-iops and --rate cannot both be set" >&2
   exit 1
 fi
 command -v fio >/dev/null 2>&1 || { echo "fio not found" >&2; exit 1; }
@@ -94,6 +111,12 @@ if [[ "$FSYNC" != "0" ]]; then
 fi
 if [[ "$FDATASYNC" != "0" ]]; then
   cmd+=(--fdatasync="$FDATASYNC")
+fi
+if [[ "$RATE_IOPS" != "0" ]]; then
+  cmd+=(--rate_iops="$RATE_IOPS")
+fi
+if [[ -n "$RATE_BYTES" ]]; then
+  cmd+=(--rate="$RATE_BYTES")
 fi
 
 printf '%q' "${cmd[0]}" >"${OUT_DIR}/fio.cmd"

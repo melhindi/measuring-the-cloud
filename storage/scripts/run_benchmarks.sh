@@ -15,6 +15,11 @@ REMOTE_RESULTS_ROOT="/opt/cloud-measuring/results"
 ACCESS_MODE="public"
 LOCAL_FILESYSTEM=""
 BLOCK_FILESYSTEM=""
+# Seconds for the per-scenario device calibration probe; 0 disables it.
+CALIBRATION_RUNTIME_SEC="20"
+# Repetitions that fail are recorded and skipped rather than aborting the
+# scenario; this counts them so the scenario still reports failure at the end.
+BENCHMARK_FAILURES=0
 declare -a BENCHMARK_NAMES=()
 
 usage() {
@@ -35,6 +40,7 @@ while [[ $# -gt 0 ]]; do
     --local-filesystem) LOCAL_FILESYSTEM="$2"; shift 2 ;;
     --block-filesystem) BLOCK_FILESYSTEM="$2"; shift 2 ;;
     --results-root) REMOTE_RESULTS_ROOT="$2"; shift 2 ;;
+    --calibration-runtime-sec) CALIBRATION_RUNTIME_SEC="$2"; shift 2 ;;
     --benchmark) BENCHMARK_NAMES+=("$2"); shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage; exit 1 ;;
@@ -63,6 +69,7 @@ case "$BLOCK_FILESYSTEM" in
   ext4|xfs|raw) ;;
   *) die "--block-filesystem must be one of: ext4, xfs, raw" ;;
 esac
+[[ "$CALIBRATION_RUNTIME_SEC" =~ ^[0-9]+$ ]] || die "--calibration-runtime-sec must be an integer"
 
 cd "$REPO_ROOT"
 TOFU_DIR="$(abs_path "$TOFU_DIR")"
@@ -246,7 +253,9 @@ selected_benchmark() {
 apply_os_tuning() {
   local label="$1"
   log "applying OS tuning profile '${OS_TUNING}' on ${label}"
-  ssh_run "$BENCHMARK_HOST" "mkdir -p '${REMOTE_SCENARIO_DIR}' && sudo /opt/cloud-measuring/bin/apply-os-tuning.sh '${OS_TUNING}' >'${REMOTE_SCENARIO_DIR}/os-tuning.log' 2>&1"
+  # The tuning script is shipped by push_remote_scripts, not baked into the
+  # image, so this must run after it.
+  ssh_run "$BENCHMARK_HOST" "mkdir -p '${REMOTE_SCENARIO_DIR}' && sudo '${REMOTE_BIN_DIR}/apply-os-tuning.sh' '${OS_TUNING}' --facts-out '${REMOTE_SCENARIO_DIR}/os-tuning.env' >'${REMOTE_SCENARIO_DIR}/os-tuning.log' 2>&1"
 }
 
 push_remote_scripts() {
@@ -254,7 +263,9 @@ push_remote_scripts() {
   scp_to "${REPO_ROOT}/storage/remote/run_fio.sh" "$BENCHMARK_HOST" "${REMOTE_BIN_DIR}/run_fio.sh"
   scp_to "${REPO_ROOT}/storage/remote/run_benchmarks.sh" "$BENCHMARK_HOST" "${REMOTE_BIN_DIR}/run_benchmarks.sh"
   scp_to "${REPO_ROOT}/storage/remote/prepare_storage_target.sh" "$BENCHMARK_HOST" "${REMOTE_BIN_DIR}/prepare_storage_target.sh"
-  ssh_run "$BENCHMARK_HOST" "chmod +x '${REMOTE_BIN_DIR}/run_fio.sh' '${REMOTE_BIN_DIR}/run_benchmarks.sh' '${REMOTE_BIN_DIR}/prepare_storage_target.sh'"
+  scp_to "${REPO_ROOT}/common/remote/collect-node-facts.sh" "$BENCHMARK_HOST" "${REMOTE_BIN_DIR}/collect-node-facts.sh"
+  scp_to "${REPO_ROOT}/common/remote/apply-os-tuning.sh" "$BENCHMARK_HOST" "${REMOTE_BIN_DIR}/apply-os-tuning.sh"
+  ssh_run "$BENCHMARK_HOST" "chmod +x '${REMOTE_BIN_DIR}/run_fio.sh' '${REMOTE_BIN_DIR}/run_benchmarks.sh' '${REMOTE_BIN_DIR}/prepare_storage_target.sh' '${REMOTE_BIN_DIR}/collect-node-facts.sh' '${REMOTE_BIN_DIR}/apply-os-tuning.sh'"
 }
 
 discover_storage_env() {
@@ -283,6 +294,86 @@ write_remote_metadata() {
   local meta_cmd
   meta_cmd="mkdir -p '${REMOTE_SCENARIO_DIR}' && { date -u +%Y-%m-%dT%H:%M:%SZ; hostname; uname -a; lscpu; ip addr; ip route; lsblk -o NAME,TYPE,SIZE,MOUNTPOINT,MODEL,FSTYPE; findmnt; fio --version || true; command -v ethtool >/dev/null 2>&1 && ethtool -i \$(ip route get 1.1.1.1 | awk '/dev/ {for (i=1;i<=NF;i++) if (\$i==\"dev\") print \$(i+1); exit}') || true; } >'${REMOTE_SCENARIO_DIR}/node-meta.log' 2>&1"
   ssh_run "$BENCHMARK_HOST" "$meta_cmd"
+
+  # Structured counterpart to node-meta.log; see common/remote/collect-node-facts.sh.
+  if ! ssh_run "$BENCHMARK_HOST" "'${REMOTE_BIN_DIR}/collect-node-facts.sh' --out '${REMOTE_SCENARIO_DIR}/node-facts.env'"; then
+    log "ignoring node-facts collection failure on benchmark host"
+  fi
+}
+
+# A short 4 KiB queue-depth-1 fsync probe on every discovered target, run once
+# per scenario before the benchmark suite.
+#
+# Two instances of the same type can differ by tens of percent in sustained
+# write rate, which is larger than most of the configuration effects this suite
+# tries to measure. Per-write fsync latency discriminates a slow device; a
+# sequential bandwidth probe does not -- it reports near-identical numbers for
+# devices whose fsync rates differ two-fold. Recording this makes "we drew a slow
+# disk" separable from "this performance class is slower".
+run_device_calibration() {
+  local probe_dir="${REMOTE_SCENARIO_DIR}/device-calibration"
+  local target_name target_mount_var target_device_var target_filesystem_var
+  local target_mount target_device target_filesystem
+  local calibration_env
+  calibration_env="$(mktemp /tmp/cloud-measuring-calibration.XXXXXX.env)"
+  : >"$calibration_env"
+
+  for target_name in $STORAGE_TARGETS; do
+    target_mount_var="STORAGE_${target_name^^}_MOUNT"
+    target_device_var="STORAGE_${target_name^^}_DEVICE"
+    target_filesystem_var="STORAGE_${target_name^^}_FILESYSTEM"
+    target_mount="${!target_mount_var:-}"
+    target_device="${!target_device_var:-}"
+    target_filesystem="${!target_filesystem_var:-}"
+    [[ -n "$target_device" ]] || continue
+    if [[ "$target_filesystem" != "raw" && -z "$target_mount" ]]; then
+      continue
+    fi
+
+    local out_dir="${probe_dir}/${target_name}"
+    local -a probe_cmd=(
+      "${REMOTE_BIN_DIR}/run_fio.sh"
+      --out-dir "$out_dir"
+      --name "calibration-4k-qd1-fsync-${target_name}"
+      --ioengine psync
+      --rw randwrite
+      --bs 4k
+      --iodepth 1
+      --numjobs 1
+      --runtime-sec "$CALIBRATION_RUNTIME_SEC"
+      --direct 1
+      --group-reporting 1
+      --time-based 1
+      --size 256M
+      --fsync 1
+      --cpu-list "$BENCHMARK_CPU_LIST"
+    )
+    if [[ "$target_filesystem" == "raw" ]]; then
+      probe_cmd=(sudo "${probe_cmd[@]}")
+      probe_cmd+=(--device "$target_device")
+    else
+      probe_cmd+=(--mount-point "$target_mount")
+    fi
+
+    log "device calibration probe on target ${target_name}"
+    if ! ssh_run "$BENCHMARK_HOST" "$(shell_join "${probe_cmd[@]}")"; then
+      log "device calibration probe failed on target ${target_name}; continuing"
+      continue
+    fi
+
+    # Pull the two numbers worth carrying in the scenario row.
+    local iops p99
+    iops="$(ssh_run "$BENCHMARK_HOST" "jq -r '.jobs[0].write.iops // empty' '${out_dir}/fio.json' 2>/dev/null" | tr -d '\r\n' || true)"
+    p99="$(ssh_run "$BENCHMARK_HOST" "jq -r '.jobs[0].write.clat_ns.percentile[\"99.000000\"] // empty' '${out_dir}/fio.json' 2>/dev/null" | tr -d '\r\n' || true)"
+    [[ -n "$iops" ]] && printf 'NODE_CALIBRATION_%s_FSYNC_IOPS=%s\n' "${target_name^^}" "$iops" >>"$calibration_env"
+    [[ -n "$p99" ]] && printf 'NODE_CALIBRATION_%s_FSYNC_CLAT_P99_NS=%s\n' "${target_name^^}" "$p99" >>"$calibration_env"
+    log "calibration ${target_name}: fsync iops=${iops:-unknown} clat_p99_ns=${p99:-unknown}"
+  done
+
+  if [[ -s "$calibration_env" ]]; then
+    scp_to "$calibration_env" "$BENCHMARK_HOST" "${REMOTE_SCENARIO_DIR}/device-calibration.env"
+  fi
+  rm -f "$calibration_env"
 }
 
 write_benchmark_env() {
@@ -298,7 +389,7 @@ write_benchmark_env() {
     BENCHMARK_NAME BENCHMARK_TOOL REPETITIONS COOLDOWN_SEC OS_TUNING BENCHMARK_CPU_LIST \
     STORAGE_TARGET_NAME STORAGE_TARGET_MOUNT STORAGE_TARGET_DEVICE STORAGE_TARGET_FILESYSTEM \
     FIO_IOENGINE FIO_RW FIO_BS FIO_IODEPTH FIO_NUMJOBS FIO_RUNTIME_SEC FIO_DIRECT FIO_GROUP_REPORTING FIO_TIME_BASED FIO_SIZE \
-    FIO_FSYNC FIO_FDATASYNC
+    FIO_FSYNC FIO_FDATASYNC FIO_RATE_IOPS
   scp_to "$tmp" "$BENCHMARK_HOST" "${remote_target_dir}/benchmark.env"
   rm -f "$tmp"
 }
@@ -340,6 +431,9 @@ run_one_fio_repetition() {
   if [[ "${FIO_FDATASYNC:-0}" != "0" ]]; then
     fio_cmd+=(--fdatasync "$FIO_FDATASYNC")
   fi
+  if [[ "${FIO_RATE_IOPS:-0}" != "0" ]]; then
+    fio_cmd+=(--rate-iops "$FIO_RATE_IOPS")
+  fi
 
   set +e
   ssh_run "$BENCHMARK_HOST" "$(shell_join "${fio_cmd[@]}")"
@@ -359,14 +453,47 @@ run_repetitions() {
   STORAGE_TARGET_DEVICE="$target_device"
   STORAGE_TARGET_FILESYSTEM="$target_filesystem"
   write_benchmark_env "$remote_target_dir" "$target_name" "$target_mount" "$target_device" "$target_filesystem"
-  local rep
+  local rep rc
   for rep in $(seq 1 "$REPETITIONS"); do
     log "running benchmark ${BENCHMARK_NAME} target ${target_name} repetition ${rep}/${REPETITIONS}"
-    run_one_fio_repetition "${remote_target_dir}/rep-${rep}" "$target_mount" "$target_device" "$target_filesystem"
+    rc=0
+    # See the network runner: '|| rc=$?' also suppresses errexit for the whole
+    # repetition, so one failed fio run does not skip every later benchmark in
+    # this scenario.
+    run_one_fio_repetition "${remote_target_dir}/rep-${rep}" "$target_mount" "$target_device" "$target_filesystem" || rc=$?
+    record_repetition_status "${remote_target_dir}/rep-${rep}" "$rc"
+    if (( rc != 0 )); then
+      BENCHMARK_FAILURES=$((BENCHMARK_FAILURES + 1))
+      log "benchmark ${BENCHMARK_NAME} target ${target_name} repetition ${rep} failed with status ${rc}; continuing"
+    fi
     if (( rep < REPETITIONS )); then
       sleep "$COOLDOWN_SEC"
     fi
   done
+}
+
+# Complements the fio-content validity checks in analysis/storage/build_csv.R:
+# those detect a run that produced bad numbers, this records a run that never
+# produced numbers at all.
+record_repetition_status() {
+  local remote_rep_dir="$1"
+  local rc="$2"
+  local tmp
+  tmp="$(mktemp /tmp/cloud-measuring-rep-status.XXXXXX.env)"
+  {
+    printf 'REP_EXIT_STATUS=%s\n' "$rc"
+    if [[ "$rc" == "0" ]]; then
+      printf 'REP_VALID=1\n'
+      printf 'REP_FAILURE_REASON=\n'
+    else
+      printf 'REP_VALID=0\n'
+      printf 'REP_FAILURE_REASON=%s\n' "fio command exited ${rc}"
+    fi
+  } >"$tmp"
+  if ! scp_to "$tmp" "$BENCHMARK_HOST" "${remote_rep_dir}/status.env"; then
+    log "could not record repetition status for ${remote_rep_dir}"
+  fi
+  rm -f "$tmp"
 }
 
 run_fio_benchmark() {
@@ -384,7 +511,11 @@ run_fio_benchmark() {
   FIO_SIZE="${FIO_SIZE:-}"
   FIO_FSYNC="${FIO_FSYNC:-0}"
   FIO_FDATASYNC="${FIO_FDATASYNC:-0}"
+  # 0 keeps the historical saturation behaviour; non-zero turns the benchmark
+  # into a latency-at-known-offered-rate measurement.
+  FIO_RATE_IOPS="${FIO_RATE_IOPS:-0}"
 
+  validate_int FIO_RATE_IOPS "$FIO_RATE_IOPS"
   validate_int REPETITIONS "$REPETITIONS"
   validate_int COOLDOWN_SEC "$COOLDOWN_SEC"
   validate_int FIO_IODEPTH "$FIO_IODEPTH"
@@ -435,16 +566,26 @@ log "waiting for benchmark host SSH to be ready"
 wait_for_host benchmark
 log "waiting for cloud-init benchmark setup to finish"
 wait_for_cloud_init benchmark
+# Scripts must be staged before anything invokes them. apply-os-tuning.sh is
+# shipped from the repository rather than embedded in the image, so this push
+# has to precede apply_os_tuning.
+push_remote_scripts
 apply_os_tuning benchmark
 BENCHMARK_CPU_LIST="$(remote_cpu_list)"
 log "benchmark CPU list: ${BENCHMARK_CPU_LIST}"
-push_remote_scripts
 discover_storage_env
 reconcile_storage_targets
 discover_storage_env
 write_remote_metadata
 ssh_run "$BENCHMARK_HOST" "mkdir -p '${REMOTE_SCENARIO_DIR}'"
 ssh_run "$BENCHMARK_HOST" "cp '${REMOTE_STORAGE_ENV}' '${REMOTE_SCENARIO_DIR}/storage.env'"
+
+# Characterise the devices we actually drew before measuring anything on them.
+if [[ "$CALIBRATION_RUNTIME_SEC" -gt 0 ]]; then
+  run_device_calibration
+else
+  log "device calibration probe disabled"
+fi
 
 if [[ -n "$COMMAND_LOG" ]]; then
   append_command_text "$COMMAND_LOG" "" "scenario=${SCENARIO_NAME} os_tuning=${OS_TUNING}"
@@ -456,7 +597,7 @@ mapfile -t benchmark_files < <(find "$BENCHMARK_DIR" -maxdepth 1 -type f -name '
 for benchmark_file in "${benchmark_files[@]}"; do
   unset BENCHMARK_NAME BENCHMARK_TOOL SKIP SKIP_REASON
   unset REPETITIONS COOLDOWN_SEC
-  unset FIO_IOENGINE FIO_RW FIO_BS FIO_IODEPTH FIO_NUMJOBS FIO_RUNTIME_SEC FIO_DIRECT FIO_GROUP_REPORTING FIO_TIME_BASED FIO_SIZE FIO_FSYNC FIO_FDATASYNC
+  unset FIO_IOENGINE FIO_RW FIO_BS FIO_IODEPTH FIO_NUMJOBS FIO_RUNTIME_SEC FIO_DIRECT FIO_GROUP_REPORTING FIO_TIME_BASED FIO_SIZE FIO_FSYNC FIO_FDATASYNC FIO_RATE_IOPS
   REPETITIONS=1
   COOLDOWN_SEC=2
 
@@ -476,3 +617,10 @@ for benchmark_file in "${benchmark_files[@]}"; do
   log "running benchmark ${BENCHMARK_NAME}"
   run_fio_benchmark
 done
+
+# Every benchmark got its chance and every artifact is on disk; the scenario is
+# still reported as failed so the run is not mistaken for a clean one.
+if (( BENCHMARK_FAILURES > 0 )); then
+  log "scenario ${SCENARIO_NAME}: ${BENCHMARK_FAILURES} repetition(s) failed"
+  exit 1
+fi
