@@ -3,7 +3,7 @@
 # shellcheck disable=SC1091
 source network/scripts/benchmark_defaults.sh
 
-BENCHMARK_NAME=sockperf-ul-tcp-64b-100kmps
+BENCHMARK_NAME=sockperf-ul-64b-100kmps-tcp
 BENCHMARK_TOOL=sockperf
 SKIP=0
 

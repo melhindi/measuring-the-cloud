@@ -1,49 +1,48 @@
-# Latency vs Offered Rate
+# Latency vs offered rate
 
-A ladder of `sockperf under-load` runs at fixed message size and increasing
-offered message rate, for both TCP and UDP.
+The TCP-vs-UDP ladder: one arm per (protocol x offered rate) at a fixed 64 B
+message, run through `sockperf under-load` with `reply-every=1` so every message
+yields a round-trip sample.
 
-## Why this exists
+## Why the file names look like this
 
-The rest of the network suite measures two operating points and nothing between
-them: `iperf3` saturates the link, and `sockperf pp` keeps one message in flight,
-which is effectively idle. Applications run in between, and that is where TCP and
-UDP actually differ — ordering, retransmission and congestion control cost little
-at one message in flight and a great deal under load.
+`run_benchmarks.sh` executes benchmark files in **lexical order**. The file name
+is therefore not cosmetic -- it is the experiment's run order, and the run order
+is part of the design.
 
-Two consequences worth knowing when reading these results:
+    sockperf-ul-64b-<rate>kmps-<position><protocol>.sh
 
-- **A protocol comparison at ping-pong rates will show almost nothing.** Both
-  protocols move one packet each way. Any TCP/UDP latency difference has to be
-  read off the shape of the curve, not from a single point.
-- **The bottom rung is where CPU idle-state exit cost is largest.** That cost has
-  been measured elsewhere at roughly +171 µs at ~1k msg/s, falling to ~0 at high
-  packet rate — larger than the same-AZ round trip. `1kmps` is included
-  deliberately so the effect is visible rather than hidden, and scenarios can set
-  `CPU_IDLE_PINNING=1` to separate it from genuine path latency. Check
-  `cpu_idle_pinning_supported` in the analysis before attributing a low-rate
-  difference to the network: not every instance type exposes the control.
+Three properties, each load-bearing:
 
-## Rungs
+1. **Zero-padded rate** (`001`, `005`, ... `100`) so the ladder ascends. Named
+   with bare integers, lexical sort gives 100k, 10k, 1k, 25k, 50k, 5k -- the
+   scenario would open with its heaviest arm on a just-booted instance and never
+   traverse rate monotonically.
 
-`1k`, `5k`, `10k`, `25k`, `50k`, `100k` messages/second, TCP and UDP, 64-byte
-messages. With `--reply-every 1` every message is answered, so the packet rate on
-the wire is twice the offered message rate.
+2. **Protocol last**, so the two protocols at a given rate run adjacently.
+   Grouping by protocol instead puts every TCP arm before every UDP arm; at
+   3 x 30 s plus cooldown per arm that separates them by roughly nine minutes,
+   and any drift over those nine minutes -- thermal, noisy-neighbour, host
+   migration -- is indistinguishable from a transport difference. The effect the
+   study is looking for is single-digit percent and the within-scenario p50 CV
+   is about 3%, so an order effect of that size is not survivable.
 
-## Running it
+3. **A leading `1`/`2` position token that alternates by rung.** Adjacency alone
+   still puts TCP first at every rung, which is a smaller bias but still a
+   systematic one. Alternating the leader makes it a balanced design: three
+   rungs lead TCP, three lead UDP, and monotonic drift cancels across the ladder
+   rather than accumulating in one protocol's favour.
 
-```bash
-./network/runner.sh \
-  --scenario network/scenarios/aws/baseline.sh \
-  --benchmark-dir network/benchmarks/latency-vs-rate
-```
+`BENCHMARK_NAME` intentionally omits the position token -- it names the
+measurement (`...-tcp`), not the slot it ran in, so reports and artifact
+directories stay readable and a rung compares against itself across runs even if
+the alternation is ever re-cut. The file name and `BENCHMARK_NAME` differing is
+deliberate; do not "fix" it by making them match.
 
-Rungs above the pair's capacity will show sockperf dropping messages. That is a
-result, not a failure: read `dropped_messages` alongside the percentiles, and
-treat any rung with drops as measuring the knee rather than the latency.
+## What is still confounded
 
-## Adding a rung
-
-Copy a file and change `SOCKPERF_MPS` and the name. Everything else comes from
-`network/scripts/benchmark_defaults.sh`, so rungs cannot drift apart in message
-size or runtime.
+Rungs run in one fixed ascending order, so rate remains confounded with time
+within a scenario. Randomising it would break the alternation's cancellation
+property and make runs non-comparable. The intended control is the reversal
+arm (`--reversal-control`), which re-runs the first scenario at the end of the
+matrix and reports the drift as a noise floor that effect sizes must clear.
