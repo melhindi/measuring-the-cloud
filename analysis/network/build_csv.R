@@ -529,11 +529,29 @@ parse_sockperf_summary <- function(run_id, scenario_name, scenario_env, benchmar
   )
 }
 
+# A run directory is one that holds scenario directories -- not one whose name
+# matches the default timestamp format.
+#
+# Keying on the name alone silently loses data: --run-id accepts any string, so
+# a run launched as --run-id stackit-ladder-01 produced a directory that "all"
+# skipped without reporting anything. An explicit id at least failed loudly;
+# "all" simply returned a smaller dataset than the artifacts on disk contained,
+# which is the harder error to notice.
+#
+# The name pattern is kept as a fast path so an in-progress run whose
+# scenario.env has not landed yet is still recognised. The structural test
+# excludes artifacts/network/runner-control, whose immediate children are run
+# directories rather than scenario directories.
 discover_run_ids <- function(repo_root) {
   artifact_root <- file.path(repo_root, "artifacts", "network")
   if (!dir.exists(artifact_root)) return(character(0))
   dirs <- list.dirs(artifact_root, full.names = FALSE, recursive = FALSE)
-  sort(dirs[grepl("^run-[0-9]{8}-[0-9]{6}$", dirs)])
+  keep <- vapply(dirs, function(d) {
+    if (grepl("^run-[0-9]{8}-[0-9]{6}$", d)) return(TRUE)
+    scenario_dirs <- list.dirs(file.path(artifact_root, d), full.names = TRUE, recursive = FALSE)
+    any(file.exists(file.path(scenario_dirs, "scenario.env")))
+  }, logical(1))
+  sort(dirs[keep])
 }
 
 discover_runs_with_scenarios <- function(repo_root, run_ids) {

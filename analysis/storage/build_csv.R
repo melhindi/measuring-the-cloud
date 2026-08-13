@@ -939,8 +939,17 @@ discover_run_ids <- function(repo_root, result_id) {
     if (!dir.exists(run_dir)) stop(sprintf("Storage run not found: %s", run_dir))
     return(result_id)
   }
+  # Structural, not name-based: --run-id accepts any string, so keying "all" on
+  # the default timestamp format silently omits any run launched with a custom
+  # id. The name pattern stays as a fast path for runs whose scenario.env has
+  # not landed yet. See the equivalent note in analysis/network/build_csv.R.
   dirs <- list.dirs(storage_root, full.names = FALSE, recursive = FALSE)
-  dirs[grepl("^run-[0-9]{8}-[0-9]{6}$", dirs)]
+  keep <- vapply(dirs, function(d) {
+    if (grepl("^run-[0-9]{8}-[0-9]{6}$", d)) return(TRUE)
+    scenario_dirs <- list.dirs(file.path(storage_root, d), full.names = TRUE, recursive = FALSE)
+    any(file.exists(file.path(scenario_dirs, "scenario.env")))
+  }, logical(1))
+  dirs[keep]
 }
 
 args <- commandArgs(trailingOnly = TRUE)
