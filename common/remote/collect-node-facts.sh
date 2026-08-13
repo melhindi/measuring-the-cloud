@@ -96,6 +96,95 @@ cpufreq_facts() {
   emit NODE_CPUFREQ_GOVERNOR_UNIFORM "$uniform"
 }
 
+# Where the NIC's interrupts are serviced, and whether packet steering is on.
+#
+# Benchmarks are pinned to CPUs 1..n-1 but nothing places the NIC's interrupts,
+# so receive softirq work can land on the same core as the measurement process.
+# At microsecond scale that shows up in p99/p99.9 as jitter with no visible
+# cause. This does not control the placement -- doing so would change the
+# machine under test -- it records it, so "the IRQs shared the benchmark core"
+# becomes a checkable fact rather than a suspicion. It is also the confound
+# most likely to differ across providers, since NIC model and queue count do.
+expand_cpu_list() {
+  local spec="$1"
+  local -a parts=()
+  local part start end i
+  IFS=',' read -ra parts <<<"$spec"
+  for part in "${parts[@]}"; do
+    if [[ "$part" == *-* ]]; then
+      start="${part%%-*}"
+      end="${part##*-}"
+      [[ "$start" =~ ^[0-9]+$ && "$end" =~ ^[0-9]+$ ]] || continue
+      for ((i = start; i <= end; i++)); do printf '%s\n' "$i"; done
+    elif [[ "$part" =~ ^[0-9]+$ ]]; then
+      printf '%s\n' "$part"
+    fi
+  done
+}
+
+irq_facts() {
+  local iface="$1"
+  [[ -n "$iface" ]] || return 0
+
+  local -a irqs=()
+  # msi_irqs rather than a name match on /proc/interrupts: virtio NICs register
+  # their interrupts as "virtio0-input.0", which contains the device name and
+  # not the interface name, so matching on the interface finds nothing on GCP
+  # and STACKIT while working fine on AWS ENA.
+  if [[ -d "/sys/class/net/${iface}/device/msi_irqs" ]]; then
+    mapfile -t irqs < <(ls "/sys/class/net/${iface}/device/msi_irqs" 2>/dev/null | sort -n)
+  fi
+  if [[ "${#irqs[@]}" -eq 0 ]]; then
+    mapfile -t irqs < <(awk -v ifc="$iface" 'NR > 1 && index($NF, ifc) > 0 {
+      n = $1; sub(/:$/, "", n); if (n ~ /^[0-9]+$/) print n
+    }' /proc/interrupts 2>/dev/null | sort -n -u)
+  fi
+
+  emit NODE_IRQ_COUNT "${#irqs[@]}"
+  [[ "${#irqs[@]}" -gt 0 ]] || return 0
+
+  local irq affinity
+  local -a cpus=()
+  for irq in "${irqs[@]}"; do
+    affinity="$(cat "/proc/irq/${irq}/smp_affinity_list" 2>/dev/null || true)"
+    [[ -n "$affinity" ]] || continue
+    mapfile -t -O "${#cpus[@]}" cpus < <(expand_cpu_list "$affinity")
+  done
+  if [[ "${#cpus[@]}" -gt 0 ]]; then
+    local unique
+    unique="$(printf '%s\n' "${cpus[@]}" | sort -n -u | paste -sd, -)"
+    emit NODE_IRQ_CPUS "$unique"
+    emit NODE_IRQ_CPU_COUNT "$(printf '%s\n' "${cpus[@]}" | sort -n -u | wc -l)"
+  fi
+
+  # irqbalance moves interrupts while the benchmark runs, so a single reading of
+  # the affinities above describes one moment rather than the whole run.
+  if pgrep -x irqbalance >/dev/null 2>&1; then
+    emit NODE_IRQBALANCE_RUNNING 1
+  else
+    emit NODE_IRQBALANCE_RUNNING 0
+  fi
+
+  local q rps_set=0 xps_set=0 rx=0 tx=0 val
+  for q in "/sys/class/net/${iface}/queues/rx-"*; do
+    [[ -d "$q" ]] || continue
+    rx=$((rx + 1))
+    val="$(cat "${q}/rps_cpus" 2>/dev/null || true)"
+    # A mask of all zeros and commas means RPS is off for that queue.
+    [[ -n "$val" && "$val" =~ [1-9a-fA-F] ]] && rps_set=1
+  done
+  for q in "/sys/class/net/${iface}/queues/tx-"*; do
+    [[ -d "$q" ]] || continue
+    tx=$((tx + 1))
+    val="$(cat "${q}/xps_cpus" 2>/dev/null || true)"
+    [[ -n "$val" && "$val" =~ [1-9a-fA-F] ]] && xps_set=1
+  done
+  emit NODE_RX_QUEUES "$rx"
+  emit NODE_TX_QUEUES "$tx"
+  emit NODE_RPS_ENABLED "$rps_set"
+  emit NODE_XPS_ENABLED "$xps_set"
+}
+
 # Instance identity comes from whichever metadata service answers. Each probe is
 # capped with a short timeout so an unreachable endpoint costs ~1s, not a hang.
 # Instance identity, including whether this is a spot instance.
@@ -190,6 +279,7 @@ mapfile -t identity < <(cloud_identity || true)
     if command -v ethtool >/dev/null 2>&1; then
       emit NODE_PRIMARY_IFACE_DRIVER "$(ethtool -i "$iface" 2>/dev/null | awk -F': ' '/^driver/ {print $2; exit}' || true)"
     fi
+    irq_facts "$iface"
   fi
 
   emit NODE_IPERF3_VERSION "$(iperf3 --version 2>/dev/null | head -n1 || true)"

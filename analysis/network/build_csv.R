@@ -298,6 +298,26 @@ scenario_common_row <- function(run_id, scenario_name, scenario_env) {
     image_id = env_get(scenario_env, "NODE_IMAGE_ID"),
     primary_iface = env_get(scenario_env, "NODE_PRIMARY_IFACE"),
     primary_iface_mtu = to_num(env_get(scenario_env, "NODE_PRIMARY_IFACE_MTU")),
+    # NIC interrupt placement and packet steering, client and server.
+    #
+    # Benchmarks run on CPUs 1..n-1 while nothing places these interrupts, so
+    # irq_cpus overlapping that range means receive softirq work could be
+    # serviced on the measurement core -- a plausible source of tail jitter
+    # that is otherwise invisible. Recorded, not controlled: the analysis can
+    # test whether it correlates with the spread rather than assuming it away.
+    irq_count = to_num(env_get(scenario_env, "NODE_IRQ_COUNT")),
+    irq_cpus = env_get(scenario_env, "NODE_IRQ_CPUS"),
+    irq_cpu_count = to_num(env_get(scenario_env, "NODE_IRQ_CPU_COUNT")),
+    irqbalance_running = env_get(scenario_env, "NODE_IRQBALANCE_RUNNING"),
+    rx_queues = to_num(env_get(scenario_env, "NODE_RX_QUEUES")),
+    tx_queues = to_num(env_get(scenario_env, "NODE_TX_QUEUES")),
+    rps_enabled = env_get(scenario_env, "NODE_RPS_ENABLED"),
+    xps_enabled = env_get(scenario_env, "NODE_XPS_ENABLED"),
+    server_irq_cpus = env_get(scenario_env, "SERVER_NODE_IRQ_CPUS"),
+    server_irq_cpu_count = to_num(env_get(scenario_env, "SERVER_NODE_IRQ_CPU_COUNT")),
+    server_irqbalance_running = env_get(scenario_env, "SERVER_NODE_IRQBALANCE_RUNNING"),
+    server_rx_queues = to_num(env_get(scenario_env, "SERVER_NODE_RX_QUEUES")),
+    server_rps_enabled = env_get(scenario_env, "SERVER_NODE_RPS_ENABLED"),
     iperf3_tool_version = env_get(scenario_env, "NODE_IPERF3_VERSION"),
     sockperf_tool_version = env_get(scenario_env, "NODE_SOCKPERF_VERSION"),
     fio_tool_version = env_get(scenario_env, "NODE_FIO_VERSION"),
@@ -701,6 +721,10 @@ scenario_cols <- c(
   "server_kernel_release", "server_primary_iface_mtu",
   "use_spot_requested", "purchase_model", "server_purchase_model",
   "kernel_release", "image_id", "primary_iface", "primary_iface_mtu",
+  "irq_count", "irq_cpus", "irq_cpu_count", "irqbalance_running",
+  "rx_queues", "tx_queues", "rps_enabled", "xps_enabled",
+  "server_irq_cpus", "server_irq_cpu_count", "server_irqbalance_running",
+  "server_rx_queues", "server_rps_enabled",
   "iperf3_tool_version", "sockperf_tool_version", "fio_tool_version"
 )
 
