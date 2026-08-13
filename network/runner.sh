@@ -20,9 +20,17 @@ ACCESS_MODE="public"
 REVERSAL_CONTROL=0
 FIRST_EXECUTED_SCENARIO=""
 SCENARIO_NAME_SUFFIX=""
-# Sample mpstat/iostat/nstat/ss during each repetition. Off by default: it is a
-# small but real extra load on the machine being measured.
-COLLECT_TELEMETRY=0
+# Sample mpstat/iostat/nstat/ss during each repetition.
+#
+# On by default. It was opt-in while the samplers ran unrestricted, because they
+# could be scheduled onto the core running the benchmark; they are now pinned to
+# CPU 0, which benchmarks never use, so the cost to the measurement is close to
+# nil and the cost of not having it is high. ss -tinH carries the TCP
+# retransmit, congestion-window and receive-queue state that is the only way to
+# explain a tail-latency difference rather than merely report one -- and it
+# cannot be recovered after the fact, because the instances are destroyed at the
+# end of the run. Use --no-telemetry to opt out.
+COLLECT_TELEMETRY=1
 RUN_ID="run-$(date +%Y%m%d-%H%M%S)"
 LOCAL_RUN_DIR=""
 LOCAL_LAUNCHER_LOG=""
@@ -30,7 +38,7 @@ LOCAL_COMMAND_LOG=""
 
 usage() {
   cat >&2 <<USAGE
-usage: $0 [--scenario FILE ... | --scenario-dir DIR] [--benchmark NAME ...] [--out DIR] [--destroy always|success|never] [--continue-on-error] [--dry-run] [--reversal-control] [--collect-telemetry] [--access-mode public|private]
+usage: $0 [--scenario FILE ... | --scenario-dir DIR] [--benchmark NAME ...] [--out DIR] [--destroy always|success|never] [--continue-on-error] [--dry-run] [--reversal-control] [--no-telemetry] [--access-mode public|private]
 USAGE
 }
 
@@ -45,6 +53,7 @@ while [[ $# -gt 0 ]]; do
     --dry-run) DRY_RUN=1; shift ;;
     --reversal-control) REVERSAL_CONTROL=1; shift ;;
     --collect-telemetry) COLLECT_TELEMETRY=1; shift ;;
+    --no-telemetry) COLLECT_TELEMETRY=0; shift ;;
     --access-mode) ACCESS_MODE="$2"; shift 2 ;;
     --run-id) RUN_ID="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
