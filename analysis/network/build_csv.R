@@ -288,6 +288,10 @@ scenario_common_row <- function(run_id, scenario_name, scenario_env) {
     # Read from the instance metadata service, so it reports what the instance
     # actually was rather than what was requested. 'unknown' means no metadata
     # service answered, which is distinct from NA (the run predates the field).
+    # Requested vs actual. USE_SPOT is what the scenario asked for;
+    # purchase_model is read from the metadata service on the node. They should
+    # agree, and the point of recording both is to notice when they do not.
+    use_spot_requested = env_get(scenario_env, "USE_SPOT"),
     purchase_model = env_get(scenario_env, "NODE_PURCHASE_MODEL"),
     server_purchase_model = env_get(scenario_env, "SERVER_NODE_PURCHASE_MODEL"),
     kernel_release = env_get(scenario_env, "NODE_KERNEL_RELEASE"),
@@ -695,7 +699,7 @@ scenario_cols <- c(
   "server_cpu_idle_deep_entries_delta",
   "server_cpufreq_driver", "server_cpufreq_governor",
   "server_kernel_release", "server_primary_iface_mtu",
-  "purchase_model", "server_purchase_model",
+  "use_spot_requested", "purchase_model", "server_purchase_model",
   "kernel_release", "image_id", "primary_iface", "primary_iface_mtu",
   "iperf3_tool_version", "sockperf_tool_version", "fio_tool_version"
 )

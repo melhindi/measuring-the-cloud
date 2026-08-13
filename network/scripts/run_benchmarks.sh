@@ -689,7 +689,9 @@ for benchmark_file in "${benchmark_files[@]}"; do
   if ! selected_benchmark "$BENCHMARK_NAME"; then
     continue
   fi
-  if [[ "$SKIP" == "1" ]]; then
+  # ${SKIP:-0}: a benchmark file that neither sets SKIP nor sources
+  # benchmark_defaults.sh would otherwise abort the scenario under set -u.
+  if [[ "${SKIP:-0}" == "1" ]]; then
     log "skipping benchmark ${BENCHMARK_NAME}${SKIP_REASON:+: ${SKIP_REASON}}"
     continue
   fi

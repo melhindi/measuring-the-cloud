@@ -634,7 +634,9 @@ for benchmark_file in "${benchmark_files[@]}"; do
   source "$benchmark_file"
   validate_common_benchmark
 
-  if [[ "$SKIP" == "1" ]]; then
+  # ${SKIP:-0}: a benchmark file that neither sets SKIP nor sources
+  # benchmark_defaults.sh would otherwise abort the scenario under set -u.
+  if [[ "${SKIP:-0}" == "1" ]]; then
     log "skipping benchmark ${BENCHMARK_NAME}${SKIP_REASON:+: ${SKIP_REASON}}"
     continue
   fi

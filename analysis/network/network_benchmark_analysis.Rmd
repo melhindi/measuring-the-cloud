@@ -1404,13 +1404,14 @@ if (nrow(frag) == 0) {
   frag$ip_fragments <- ceiling(frag$msg_size_bytes / frag$frame_capacity_bytes)
   frag$mtu_mismatch <- !is.na(frag$server_mtu) & frag$client_mtu != frag$server_mtu
   flagged <- frag[!is.na(frag$ip_fragments) & (frag$ip_fragments > 1 | frag$mtu_mismatch), ]
+  # Note first, so kable() can be the last expression and get knitr's table
+  # treatment; see the purchase-model chunk for why print(kable(...)) does not.
+  cat("Note: this is the *interface* MTU. The path MTU can be lower, especially across regions or peered networks, and is not measured here.\n\n")
   if (nrow(flagged) == 0) {
     cat("Every UDP message fits in a single frame at the recorded MTU, and client and server MTUs agree.\n")
   } else {
-    # print() is required here for the same reason as above: a statement follows.
-    print(kable(flagged, caption = "UDP rows that fragment at the recorded MTU, or whose two ends disagree on MTU. Latency at these sizes is not directly comparable with TCP, nor across arms with different MTUs."))
+    kable(flagged, caption = "UDP rows that fragment at the recorded MTU, or whose two ends disagree on MTU. Latency at these sizes is not directly comparable with TCP, nor across arms with different MTUs.")
   }
-  cat("\nNote: this is the *interface* MTU. The path MTU can be lower, especially across regions or peered networks, and is not measured here.\n")
 }
 ```
 
@@ -1433,13 +1434,15 @@ if (nrow(purchase) == 0) {
   cat("No sockperf rows.\n")
 } else {
   distinct_models <- setdiff(unique(c(purchase$client_model, purchase$server_model)), "not recorded")
-  # print() is required: kable's value is only auto-printed when it is the last
-  # expression in the block, and a statement follows it here.
-  print(kable(purchase, caption = "Purchase model of the instances behind these measurements, read from the metadata service."))
+  # The warning is emitted first so that kable() is the last expression in the
+  # block. knitr only gives a kable object its table treatment when it is
+  # auto-printed; wrapping it in print() emits the markdown as verbatim console
+  # output instead, which renders as a code block rather than a table.
   if (length(distinct_models) > 1) {
-    cat(sprintf("\nWARNING: this result set spans %s. Keep every arm of a comparison on one purchasing model, or the host draw differs between arms.\n",
+    cat(sprintf("WARNING: this result set spans %s. Keep every arm of a comparison on one purchasing model, or the host draw differs between arms.\n\n",
                 paste(distinct_models, collapse = " and ")))
   }
+  kable(purchase, caption = "Purchase model of the instances behind these measurements, read from the metadata service.")
 }
 ```
 
