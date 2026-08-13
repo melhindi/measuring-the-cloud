@@ -91,7 +91,7 @@ run_scenario() {
   scenario_file="$(abs_path "$scenario_file")"
   require_file "$scenario_file"
 
-  unset SCENARIO_NAME PROVIDER TOFU_DIR TFVARS_FILE BENCHMARK_DIR PLACEMENT_MODE OS_TUNING INSTANCE_AFFINITY CLIENT_MACHINE_TYPE SERVER_MACHINE_TYPE CLIENT_AVAILABILITY_ZONE SERVER_AVAILABILITY_ZONE SERVER_REGION ENABLE_TIER1_NETWORKING CPU_IDLE_PINNING USE_SPOT SKIP SKIP_REASON
+  unset SCENARIO_NAME PROVIDER TOFU_DIR TFVARS_FILE BENCHMARK_DIR PLACEMENT_MODE OS_TUNING INSTANCE_AFFINITY CLIENT_MACHINE_TYPE SERVER_MACHINE_TYPE CLIENT_AVAILABILITY_ZONE SERVER_AVAILABILITY_ZONE CLIENT_REGION SERVER_REGION ENABLE_TIER1_NETWORKING CPU_IDLE_PINNING USE_SPOT SKIP SKIP_REASON
   # shellcheck disable=SC1090
   source "$scenario_file"
 
@@ -198,6 +198,7 @@ run_scenario() {
     [[ -n "$SERVER_MACHINE_TYPE" ]] && echo "  server_machine_type=${SERVER_MACHINE_TYPE}"
     [[ -n "$CLIENT_AVAILABILITY_ZONE" ]] && echo "  client_availability_zone=${CLIENT_AVAILABILITY_ZONE}"
     [[ -n "$SERVER_AVAILABILITY_ZONE" ]] && echo "  server_availability_zone=${SERVER_AVAILABILITY_ZONE}"
+    [[ -n "${CLIENT_REGION:-}" ]] && echo "  client_region=${CLIENT_REGION}"
     [[ -n "${SERVER_REGION:-}" ]] && echo "  server_region=${SERVER_REGION}"
     if [[ "${#BENCHMARK_NAMES[@]}" -gt 0 ]]; then
     echo "  benchmarks=${BENCHMARK_NAMES[*]}"
@@ -238,6 +239,30 @@ run_scenario() {
     apply_tfvar_overlay "$merged_tfvars" "server_machine_type" "\"${SERVER_MACHINE_TYPE}\""
     apply_tfvar_overlay "$merged_tfvars" "client_availability_zone" "\"${CLIENT_AVAILABILITY_ZONE}\""
     apply_tfvar_overlay "$merged_tfvars" "server_availability_zone" "\"${SERVER_AVAILABILITY_ZONE}\""
+  fi
+  # The client's region, which unlike server_region is spelled differently by
+  # each provider's module and so cannot be overlaid under one name.
+  #
+  # Without this a scenario can only use zones inside whatever region its tfvars
+  # happens to name, and the tfvars is shared by every scenario for that
+  # provider. Moving one scenario to another region then means either editing
+  # the shared file -- silently relocating every other scenario that reads it --
+  # or maintaining a second near-identical copy.
+  #
+  # AWS images are region-scoped, so an AWS scenario setting this must also
+  # point image_id at an AMI in the new region; GCP and OpenStack images are
+  # global and need no such care. That asymmetry is why the existing
+  # eu-central-1 AWS scenarios cannot simply be pointed at the us-east-1
+  # baseline.
+  if [[ -n "${CLIENT_REGION:-}" ]]; then
+    local client_region_var=""
+    case "$PROVIDER" in
+      aws) client_region_var="aws_region" ;;
+      gcp) client_region_var="gcp_region" ;;
+      stackit) client_region_var="stackit_region" ;;
+      *) die "${SCENARIO_NAME}: CLIENT_REGION is not supported for provider ${PROVIDER}" ;;
+    esac
+    apply_tfvar_overlay "$merged_tfvars" "$client_region_var" "\"${CLIENT_REGION}\""
   fi
   if [[ -n "${SERVER_REGION:-}" ]]; then
     apply_tfvar_overlay "$merged_tfvars" "server_region" "\"${SERVER_REGION}\""
