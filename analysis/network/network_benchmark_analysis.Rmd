@@ -127,6 +127,20 @@ default_report_config <- list(
   reference_sockperf_msg_size_bytes = 64,
   reference_os_tuning = "standard",
   instance_comparison_placement_class = "different-host-single-az",
+  # Admission rules for the under-load ladder.
+  #
+  # A rung whose generator fell short of its offered rate measures the
+  # generator's ceiling, not the network's. 95% is loose enough to matter: TCP
+  # is the arm more likely to fall short, latency-vs-rate is superlinear near
+  # the knee, and the shortfall is largest exactly where the interesting
+  # divergence lives -- so a loose filter systematically flatters TCP.
+  ul_min_delivered_pct = 99,
+  # Two arms only compare if they ran at the same *achieved* load. Equal
+  # offered rate is not equal load once either arm misses its target.
+  ul_max_rate_gap_pct = 2,
+  # A percentile needs samples behind it. p99.9 estimated from a handful of
+  # observations is noise with a precise-looking name.
+  ul_min_tail_samples = 100,
   # Ordering only; values absent from the data are dropped.
   preferred_provider_order = c("stackit", "aws", "gcp"),
   preferred_placement_order = c(
@@ -161,6 +175,9 @@ small_machine <- cfg("placement_comparison_small_machine")
 large_machine <- cfg("placement_comparison_large_machine")
 ref_os_tuning <- cfg("reference_os_tuning")
 ref_placement <- cfg("instance_comparison_placement_class")
+ul_min_delivered <- cfg("ul_min_delivered_pct")
+ul_max_rate_gap <- cfg("ul_max_rate_gap_pct")
+ul_min_tail_samples <- cfg("ul_min_tail_samples")
 ref_tcp_length_bytes <- cfg("reference_tcp_length_bytes")
 ref_udp_length_bytes <- cfg("reference_udp_length_bytes")
 ref_udp_target_gbps <- cfg("reference_udp_target_gbps")
@@ -1259,7 +1276,7 @@ if (ul_any$n == 0) {
     group by 1, 2, 3, 4
     order by 1, 3, 4
   ")
-  delivery$rung_valid <- ifelse(is.na(delivery$pct_delivered) | delivery$pct_delivered < 95,
+  delivery$rung_valid <- ifelse(is.na(delivery$pct_delivered) | delivery$pct_delivered < ul_min_delivered,
                                 "NO - offered rate not delivered", "yes")
   kable(delivery, caption = "Offered vs achieved rate. A rung that did not deliver its offered load measures the generator's ceiling, not the network's, and its percentiles describe a load that was never applied.")
 }
@@ -1278,11 +1295,11 @@ if (nrow(lat_rate) == 0) {
 } else {
   # Only rungs that actually delivered their offered load are interpretable.
   lat_rate$delivered_pct <- 100 * lat_rate$achieved_mps / lat_rate$offered_mps
-  usable <- lat_rate[!is.na(lat_rate$delivered_pct) & lat_rate$delivered_pct >= 95, ]
+  usable <- lat_rate[!is.na(lat_rate$delivered_pct) & lat_rate$delivered_pct >= ul_min_delivered, ]
   dropped_rungs <- nrow(lat_rate) - nrow(usable)
 
   if (nrow(usable) == 0) {
-    no_data("No under-load rung delivered at least 95% of its offered rate.")
+    no_data(sprintf("No under-load rung delivered at least %g%% of its offered rate.", ul_min_delivered))
   } else {
     long <- rbind(
       data.frame(usable[, c("placement_class", "provider", "protocol", "offered_mps")],
@@ -1303,8 +1320,8 @@ if (nrow(lat_rate) == 0) {
       labs(
         title = "Round-trip latency against offered message rate",
         subtitle = sprintf(
-          "sockperf under-load, median across repetitions. Rungs delivering <95%% of offered load excluded (%d of %d).",
-          dropped_rungs, nrow(lat_rate)
+          "sockperf under-load, median across repetitions. Rungs delivering <%g%% of offered load excluded (%d of %d).",
+          ul_min_delivered, dropped_rungs, nrow(lat_rate)
         ),
         x = "Offered rate (messages/s)", y = "RTT (us)",
         colour = "Protocol", linetype = "Percentile"
@@ -1315,33 +1332,145 @@ if (nrow(lat_rate) == 0) {
 }
 ```
 
+The protocol comparison, which is the study's headline number. Two arms are only
+compared when they ran at the same **achieved** load, not merely the same
+requested one -- see the note below the table for why that distinction decides
+the result.
+
 ```{r latency-rate-protocol-delta}
-proto_delta <- sql("
+proto_delta <- sql(sprintf("
 select placement_class, provider, offered_mps,
+       round(median(case when protocol = 'tcp' then achieved_mps end), 0) as tcp_achieved,
+       round(median(case when protocol = 'udp' then achieved_mps end), 0) as udp_achieved,
        round(median(case when protocol = 'tcp' then p50_rtt_us end), 1) as tcp_p50,
        round(median(case when protocol = 'udp' then p50_rtt_us end), 1) as udp_p50,
        round(median(case when protocol = 'tcp' then p99_rtt_us end), 1) as tcp_p99,
        round(median(case when protocol = 'udp' then p99_rtt_us end), 1) as udp_p99
 from sockperf
 where mode = 'ul' and offered_mps is not null
-  and achieved_mps >= 0.95 * offered_mps
+  and achieved_mps >= %.4f * offered_mps
 group by 1, 2, 3
 order by 1, 2, 3
-")
+", ul_min_delivered / 100))
+
 if (nrow(proto_delta) == 0) {
-  no_data("No comparable TCP/UDP under-load rungs.")
+  no_data(sprintf(
+    "No TCP/UDP under-load rung delivered at least %g%% of its offered rate.",
+    ul_min_delivered))
 } else {
-  proto_delta$p50_udp_advantage_pct <- round(100 * (proto_delta$tcp_p50 - proto_delta$udp_p50) / proto_delta$tcp_p50, 1)
-  proto_delta$p99_udp_advantage_pct <- round(100 * (proto_delta$tcp_p99 - proto_delta$udp_p99) / proto_delta$tcp_p99, 1)
-  kable(proto_delta, caption = "TCP vs UDP at equal offered rate. Positive advantage means UDP is lower. Read down a column: a difference that only appears at higher rungs is the transport cost that ping-pong cannot see.")
+  # Both arms must exist before a delta means anything.
+  both_present <- !is.na(proto_delta$tcp_achieved) & !is.na(proto_delta$udp_achieved)
+  mean_achieved <- (proto_delta$tcp_achieved + proto_delta$udp_achieved) / 2
+  proto_delta$rate_gap_pct <- ifelse(
+    both_present,
+    round(100 * abs(proto_delta$tcp_achieved - proto_delta$udp_achieved) /
+            pmax(mean_achieved, 1), 1),
+    NA_real_)
+
+  comparable <- both_present &
+    !is.na(proto_delta$rate_gap_pct) &
+    proto_delta$rate_gap_pct <= ul_max_rate_gap
+
+  proto_delta$comparable <- ifelse(
+    !both_present, "no - one protocol missing",
+    ifelse(comparable, "yes", "no - load mismatch"))
+
+  # Suppressed rather than shown-and-caveated: a number in this column is read
+  # as the protocol effect, and where the loads differ it is partly a rate
+  # effect. There is no honest way to print it and expect the caveat to travel.
+  advantage <- function(tcp, udp) ifelse(comparable, round(100 * (tcp - udp) / tcp, 1), NA_real_)
+  proto_delta$p50_udp_advantage_pct <- advantage(proto_delta$tcp_p50, proto_delta$udp_p50)
+  proto_delta$p99_udp_advantage_pct <- advantage(proto_delta$tcp_p99, proto_delta$udp_p99)
+
+  proto_delta <- proto_delta[, c(
+    "placement_class", "provider", "offered_mps",
+    "tcp_achieved", "udp_achieved", "rate_gap_pct",
+    "tcp_p50", "udp_p50", "p50_udp_advantage_pct",
+    "tcp_p99", "udp_p99", "p99_udp_advantage_pct",
+    "comparable")]
+
+  n_bad <- sum(!comparable)
+  if (n_bad > 0) {
+    cat(sprintf(
+      paste0("%d of %d rungs are not comparable and have a blank advantage.\n\n",
+             "This is the check that keeps the headline honest. Latency against ",
+             "offered rate is superlinear near the knee, so if TCP delivered %g%% ",
+             "of a rung and UDP delivered 100%%, the two arms were carrying ",
+             "materially different load and part of any latency gap is that load ",
+             "difference rather than the transport. TCP is the arm more likely to ",
+             "fall short, so accepting mismatched rungs biases the result toward ",
+             "UDP by construction. A rung is compared here only when the achieved ",
+             "rates agree within %g%%.\n\n"),
+      n_bad, nrow(proto_delta), ul_min_delivered, ul_max_rate_gap))
+  }
+
+  kable(proto_delta, caption = sprintf(
+    "TCP vs UDP at matched achieved rate. Positive advantage means UDP is lower. Rungs are admitted only if both arms delivered >=%g%% of the offered rate and their achieved rates agree within %g%%; the advantage is blank otherwise. Read down a column: a difference that appears only at higher rungs is the transport cost ping-pong cannot see.",
+    ul_min_delivered, ul_max_rate_gap))
+}
+```
+
+How much data stands behind each percentile. A tail percentile is an order
+statistic: p99.9 is estimated from the slowest 0.1% of observations, so at low
+offered rates it can rest on a few dozen samples even though the run looks
+complete.
+
+```{r latency-rate-tail-support}
+tail_support <- sql("
+select protocol, offered_mps,
+       round(median(coalesce(received_messages, sent_messages)), 0) as rtt_samples_per_rep,
+       round(median(reply_every), 0) as reply_every,
+       round(median(valid_duration_sec), 1) as valid_sec,
+       count(*) as reps
+from sockperf
+where mode = 'ul' and offered_mps is not null
+group by 1, 2
+order by 2, 1
+")
+if (nrow(tail_support) == 0) {
+  no_data("No under-load rows to assess percentile support.")
+} else {
+  # reply_every = 1 means every message is echoed, so replies received is the
+  # RTT observation count directly. Sample counts are per repetition because
+  # sockperf computes its percentiles per run; pooling reps would overstate the
+  # support behind any single reported percentile.
+  tail_support$p99_samples <- floor(tail_support$rtt_samples_per_rep * 0.01)
+  tail_support$p999_samples <- floor(tail_support$rtt_samples_per_rep * 0.001)
+  tail_support$p99_usable <- ifelse(tail_support$p99_samples >= ul_min_tail_samples, "yes", "thin")
+  tail_support$p999_usable <- ifelse(tail_support$p999_samples >= ul_min_tail_samples, "yes", "thin")
+
+  thin_999 <- tail_support[tail_support$p999_samples < ul_min_tail_samples, ]
+  if (nrow(thin_999) > 0) {
+    thin_rates <- sort(unique(thin_999$offered_mps))
+    cat(sprintf(
+      paste0("p99.9 is under-supported at %d of %d rungs (offered rates: %s).\n\n",
+             "At those rates a 30 s repetition yields too few observations for the ",
+             "0.1%% tail to be stable -- the reported p99.9 moves with which handful ",
+             "of samples landed slowest, not with the transport. Quote p50 and p99 ",
+             "at these rungs and treat p99.9 as directional only. The fix, if the ",
+             "tail at low rate is the question, is a longer runtime rather than more ",
+             "repetitions: percentiles are computed per run, so three short runs give ",
+             "three noisy estimates rather than one good one.\n\n"),
+      nrow(thin_999), nrow(tail_support),
+      paste(format(thin_rates, big.mark = ",", trim = TRUE), collapse = ", ")))
+  }
+
+  kable(tail_support, caption = sprintf(
+    "Observations behind each reported percentile, per repetition. Samples are the replies sockperf received; p99/p99.9 columns are the count in each tail. A tail with fewer than %d samples is marked thin and should not carry a quantitative claim.",
+    ul_min_tail_samples))
 }
 ```
 
 ```{r latency-rate-idle-state}
 idle_grouping <- sql("
-select coalesce(cpu_idle_pinning_requested, '0') as pinning_requested,
-       coalesce(cpu_idle_pinning_supported, 'unknown') as pinning_supported,
-       coalesce(cpu_idle_pinning_verified, 'unknown') as pinning_verified,
+-- Cast before coalescing with a string sentinel. These are 0/1 flags, so
+-- read_csv_auto infers INT64 once any run has recorded them and VARCHAR while
+-- they are all empty -- meaning the same query binds in one result set and
+-- fails in another. The cast makes the column type independent of which runs
+-- happen to be present.
+select coalesce(cast(cpu_idle_pinning_requested as varchar), '0') as pinning_requested,
+       coalesce(cast(cpu_idle_pinning_supported as varchar), 'unknown') as pinning_supported,
+       coalesce(cast(cpu_idle_pinning_verified as varchar), 'unknown') as pinning_verified,
        count(distinct scenario_name) as scenarios,
        count(*) as rows
 from sockperf

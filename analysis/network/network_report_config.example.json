@@ -7,6 +7,9 @@
   "reference_sockperf_msg_size_bytes": 64,
   "reference_os_tuning": "standard",
   "instance_comparison_placement_class": "different-host-single-az",
+  "ul_min_delivered_pct": 99,
+  "ul_max_rate_gap_pct": 2,
+  "ul_min_tail_samples": 100,
   "preferred_provider_order": ["stackit", "aws", "gcp"],
   "preferred_placement_order": [
     "co-located-single-az",
