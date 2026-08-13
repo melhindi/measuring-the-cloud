@@ -14,10 +14,15 @@ OUT=""
 # Overridable so the "this guest exposes no cpufreq" branch can be exercised
 # against an empty directory in tests. Production always uses the real path.
 CPU_SYSFS_ROOT="/sys/devices/system/cpu"
+# Overridable for the same reason as CPU_SYSFS_ROOT: the virtio interrupt
+# layout cannot be reached from a development machine, and the first version
+# of irq_facts shipped a silent failure because it could not be exercised.
+NET_SYSFS_ROOT="/sys/class/net"
+PROC_INTERRUPTS="/proc/interrupts"
 
 usage() {
   cat >&2 <<USAGE
-usage: $0 --out PATH [--cpu-sysfs-root PATH]
+usage: $0 --out PATH [--cpu-sysfs-root PATH] [--net-sysfs-root PATH] [--proc-interrupts PATH]
 USAGE
 }
 
@@ -25,6 +30,8 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --out) OUT="$2"; shift 2 ;;
     --cpu-sysfs-root) CPU_SYSFS_ROOT="$2"; shift 2 ;;
+    --net-sysfs-root) NET_SYSFS_ROOT="$2"; shift 2 ;;
+    --proc-interrupts) PROC_INTERRUPTS="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage; exit 1 ;;
   esac
@@ -127,17 +134,35 @@ irq_facts() {
   [[ -n "$iface" ]] || return 0
 
   local -a irqs=()
-  # msi_irqs rather than a name match on /proc/interrupts: virtio NICs register
-  # their interrupts as "virtio0-input.0", which contains the device name and
-  # not the interface name, so matching on the interface finds nothing on GCP
-  # and STACKIT while working fine on AWS ENA.
-  if [[ -d "/sys/class/net/${iface}/device/msi_irqs" ]]; then
-    mapfile -t irqs < <(ls "/sys/class/net/${iface}/device/msi_irqs" 2>/dev/null | sort -n)
-  fi
+  local devpath devname candidate
+  devpath="$(readlink -f "${NET_SYSFS_ROOT}/${iface}/device" 2>/dev/null || true)"
+  devname=""
+  [[ -n "$devpath" ]] && devname="$(basename "$devpath" 2>/dev/null || true)"
+
+  # msi_irqs belongs to the PCI device. On AWS ENA /sys/class/net/<if>/device is
+  # that PCI device and the direct path works. On virtio NICs -- GCP and STACKIT
+  # -- it is the virtio device (virtio0) sitting one level below the PCI device
+  # that actually owns the interrupts, so the direct path is empty and the
+  # parent has to be tried. A first STACKIT run recorded NODE_IRQ_COUNT=0
+  # because only the direct path was checked.
+  for candidate in \
+    "${NET_SYSFS_ROOT}/${iface}/device/msi_irqs" \
+    "${NET_SYSFS_ROOT}/${iface}/device/../msi_irqs"; do
+    [[ -d "$candidate" ]] || continue
+    mapfile -t irqs < <(ls "$candidate" 2>/dev/null | sort -n)
+    [[ "${#irqs[@]}" -gt 0 ]] && break
+  done
+
+  # /proc/interrupts fallback, matching the device name as well as the interface
+  # name. virtio registers its interrupts as "virtio0-input.0", which contains
+  # neither the interface name nor anything derivable from it, so the interface
+  # match alone finds nothing on exactly the providers that need the fallback.
   if [[ "${#irqs[@]}" -eq 0 ]]; then
-    mapfile -t irqs < <(awk -v ifc="$iface" 'NR > 1 && index($NF, ifc) > 0 {
-      n = $1; sub(/:$/, "", n); if (n ~ /^[0-9]+$/) print n
-    }' /proc/interrupts 2>/dev/null | sort -n -u)
+    mapfile -t irqs < <(awk -v ifc="$iface" -v dev="${devname:-__nodev__}" 'NR > 1 {
+      if (index($NF, ifc) > 0 || (dev != "__nodev__" && index($NF, dev) > 0)) {
+        n = $1; sub(/:$/, "", n); if (n ~ /^[0-9]+$/) print n
+      }
+    }' "$PROC_INTERRUPTS" 2>/dev/null | sort -n -u)
   fi
 
   emit NODE_IRQ_COUNT "${#irqs[@]}"
@@ -166,14 +191,14 @@ irq_facts() {
   fi
 
   local q rps_set=0 xps_set=0 rx=0 tx=0 val
-  for q in "/sys/class/net/${iface}/queues/rx-"*; do
+  for q in "${NET_SYSFS_ROOT}/${iface}/queues/rx-"*; do
     [[ -d "$q" ]] || continue
     rx=$((rx + 1))
     val="$(cat "${q}/rps_cpus" 2>/dev/null || true)"
     # A mask of all zeros and commas means RPS is off for that queue.
     [[ -n "$val" && "$val" =~ [1-9a-fA-F] ]] && rps_set=1
   done
-  for q in "/sys/class/net/${iface}/queues/tx-"*; do
+  for q in "${NET_SYSFS_ROOT}/${iface}/queues/tx-"*; do
     [[ -d "$q" ]] || continue
     tx=$((tx + 1))
     val="$(cat "${q}/xps_cpus" 2>/dev/null || true)"
@@ -275,7 +300,7 @@ mapfile -t identity < <(cloud_identity || true)
 
   if [[ -n "$iface" ]]; then
     emit NODE_PRIMARY_IFACE "$iface"
-    emit NODE_PRIMARY_IFACE_MTU "$(cat "/sys/class/net/${iface}/mtu" 2>/dev/null || true)"
+    emit NODE_PRIMARY_IFACE_MTU "$(cat "${NET_SYSFS_ROOT}/${iface}/mtu" 2>/dev/null || true)"
     if command -v ethtool >/dev/null 2>&1; then
       emit NODE_PRIMARY_IFACE_DRIVER "$(ethtool -i "$iface" 2>/dev/null | awk -F': ' '/^driver/ {print $2; exit}' || true)"
     fi
