@@ -194,3 +194,9 @@ variable "instance_affinity" {
     error_message = "instance_affinity must be one of: none, co-located, different-host"
   }
 }
+
+variable "use_spot_instances" {
+  description = "Request the benchmark client and server from the EC2 spot market. Off by default. Intended for validating the mechanism; a latency study should keep every arm on one purchasing model, because spot draws from spare capacity and so influences which physical host each instance lands on."
+  type        = bool
+  default     = false
+}

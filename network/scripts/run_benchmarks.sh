@@ -12,6 +12,7 @@ RUN_ID=""
 OS_TUNING="standard"
 INSTANCE_AFFINITY="none"
 CPU_IDLE_PINNING="0"
+USE_SPOT="0"
 # Repetitions that fail are recorded and skipped rather than aborting the
 # scenario; this counts them so the scenario still reports failure at the end.
 BENCHMARK_FAILURES=0
@@ -40,6 +41,7 @@ while [[ $# -gt 0 ]]; do
     --os-tuning) OS_TUNING="$2"; shift 2 ;;
     --instance-affinity) INSTANCE_AFFINITY="$2"; shift 2 ;;
     --cpu-idle-pinning) CPU_IDLE_PINNING="$2"; shift 2 ;;
+    --use-spot) USE_SPOT="$2"; shift 2 ;;
     --collect-telemetry) COLLECT_TELEMETRY="$2"; shift 2 ;;
     --telemetry-interval-sec) TELEMETRY_INTERVAL_SEC="$2"; shift 2 ;;
     --server-region) SERVER_REGION="$2"; shift 2 ;;
@@ -71,6 +73,10 @@ esac
 case "$CPU_IDLE_PINNING" in
   0|1) ;;
   *) die "--cpu-idle-pinning must be 0 or 1" ;;
+esac
+case "$USE_SPOT" in
+  0|1) ;;
+  *) die "--use-spot must be 0 or 1" ;;
 esac
 case "$COLLECT_TELEMETRY" in
   0|1) ;;
@@ -301,7 +307,7 @@ kill_stale_server() {
 write_remote_metadata() {
   local tmp
   tmp="$(mktemp /tmp/cloud-measuring-scenario.XXXXXX.env)"
-  write_env_file "$tmp" RUN_ID SCENARIO_NAME OS_TUNING INSTANCE_AFFINITY PLACEMENT_GROUP_NAME PLACEMENT_GROUP_STRATEGY ACCESS_MODE CLIENT_PUBLIC_IP SERVER_PUBLIC_IP CLIENT_PRIVATE_IP SERVER_PRIVATE_IP CLIENT_SSH_HOST SERVER_SSH_HOST SSH_USER CLIENT_MACHINE_TYPE SERVER_MACHINE_TYPE CLIENT_AVAILABILITY_ZONE SERVER_AVAILABILITY_ZONE CLIENT_CPU_LIST SERVER_CPU_LIST SERVER_REGION PLACEMENT_MODE CPU_IDLE_PINNING
+  write_env_file "$tmp" RUN_ID SCENARIO_NAME OS_TUNING INSTANCE_AFFINITY PLACEMENT_GROUP_NAME PLACEMENT_GROUP_STRATEGY ACCESS_MODE CLIENT_PUBLIC_IP SERVER_PUBLIC_IP CLIENT_PRIVATE_IP SERVER_PRIVATE_IP CLIENT_SSH_HOST SERVER_SSH_HOST SSH_USER CLIENT_MACHINE_TYPE SERVER_MACHINE_TYPE CLIENT_AVAILABILITY_ZONE SERVER_AVAILABILITY_ZONE CLIENT_CPU_LIST SERVER_CPU_LIST SERVER_REGION PLACEMENT_MODE CPU_IDLE_PINNING USE_SPOT
   scp_to "$tmp" "$CLIENT_SSH_HOST" "${REMOTE_SCENARIO_DIR}/scenario.env"
   scp_to "$tmp" "$SERVER_SSH_HOST" "${REMOTE_SCENARIO_DIR}/scenario.env"
   rm -f "$tmp"

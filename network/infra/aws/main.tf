@@ -427,6 +427,23 @@ resource "aws_instance" "client" {
   }
   user_data = templatefile("${path.module}/templates/user_data.sh.tftpl", { node_role = "client" })
   tags      = merge(local.labels, { Name = "${local.name_prefix}-client", Role = "client" })
+
+  # Spot is opt-in per scenario and off by default. "one-time" plus "terminate"
+  # is deliberate: a persistent request would relaunch after an interruption and
+  # leave a standing request that destroy does not clean up. See
+  # storage/scenarios/aws/all/README-spot.md for why the study itself should not
+  # use this -- spot draws from spare capacity and so influences which physical
+  # host you land on.
+  dynamic "instance_market_options" {
+    for_each = var.use_spot_instances ? [1] : []
+    content {
+      market_type = "spot"
+      spot_options {
+        spot_instance_type             = "one-time"
+        instance_interruption_behavior = "terminate"
+      }
+    }
+  }
 }
 
 resource "aws_instance" "server" {
@@ -447,6 +464,23 @@ resource "aws_instance" "server" {
   }
   user_data = templatefile("${path.module}/templates/user_data.sh.tftpl", { node_role = "server" })
   tags      = merge(local.labels, { Name = "${local.name_prefix}-server", Role = "server" })
+
+  # Spot is opt-in per scenario and off by default. "one-time" plus "terminate"
+  # is deliberate: a persistent request would relaunch after an interruption and
+  # leave a standing request that destroy does not clean up. See
+  # storage/scenarios/aws/all/README-spot.md for why the study itself should not
+  # use this -- spot draws from spare capacity and so influences which physical
+  # host you land on.
+  dynamic "instance_market_options" {
+    for_each = var.use_spot_instances ? [1] : []
+    content {
+      market_type = "spot"
+      spot_options {
+        spot_instance_type             = "one-time"
+        instance_interruption_behavior = "terminate"
+      }
+    }
+  }
 }
 
 resource "aws_instance" "server_remote" {
@@ -468,4 +502,21 @@ resource "aws_instance" "server_remote" {
   user_data  = templatefile("${path.module}/templates/user_data.sh.tftpl", { node_role = "server" })
   depends_on = [aws_vpc_peering_connection_accepter.cross_region, aws_route_table_association.server_private]
   tags       = merge(local.labels, { Name = "${local.name_prefix}-server", Role = "server" })
+
+  # Spot is opt-in per scenario and off by default. "one-time" plus "terminate"
+  # is deliberate: a persistent request would relaunch after an interruption and
+  # leave a standing request that destroy does not clean up. See
+  # storage/scenarios/aws/all/README-spot.md for why the study itself should not
+  # use this -- spot draws from spare capacity and so influences which physical
+  # host you land on.
+  dynamic "instance_market_options" {
+    for_each = var.use_spot_instances ? [1] : []
+    content {
+      market_type = "spot"
+      spot_options {
+        spot_instance_type             = "one-time"
+        instance_interruption_behavior = "terminate"
+      }
+    }
+  }
 }

@@ -82,7 +82,7 @@ run_scenario() {
   scenario_file="$(abs_path "$scenario_file")"
   require_file "$scenario_file"
 
-  unset SCENARIO_NAME PROVIDER TOFU_DIR TFVARS_FILE BENCHMARK_DIR PLACEMENT_MODE OS_TUNING INSTANCE_AFFINITY CLIENT_MACHINE_TYPE SERVER_MACHINE_TYPE CLIENT_AVAILABILITY_ZONE SERVER_AVAILABILITY_ZONE SERVER_REGION ENABLE_TIER1_NETWORKING CPU_IDLE_PINNING SKIP SKIP_REASON
+  unset SCENARIO_NAME PROVIDER TOFU_DIR TFVARS_FILE BENCHMARK_DIR PLACEMENT_MODE OS_TUNING INSTANCE_AFFINITY CLIENT_MACHINE_TYPE SERVER_MACHINE_TYPE CLIENT_AVAILABILITY_ZONE SERVER_AVAILABILITY_ZONE SERVER_REGION ENABLE_TIER1_NETWORKING CPU_IDLE_PINNING USE_SPOT SKIP SKIP_REASON
   # shellcheck disable=SC1090
   source "$scenario_file"
 
@@ -139,6 +139,22 @@ run_scenario() {
     0|1) ;;
     *) die "${scenario_file}: CPU_IDLE_PINNING must be 0 or 1" ;;
   esac
+  # Off by default and AWS-only: spot is implemented for the AWS module, and
+  # STACKIT has no spot market at all. Rejected rather than ignored elsewhere.
+  USE_SPOT="${USE_SPOT:-0}"
+  case "$USE_SPOT" in
+    0|1) ;;
+    *) die "${scenario_file}: USE_SPOT must be 0 or 1" ;;
+  esac
+  if [[ "$USE_SPOT" == "1" && "$PROVIDER" != "aws" ]]; then
+    die "${scenario_file}: USE_SPOT=1 is only supported for PROVIDER=aws"
+  fi
+  if [[ "$USE_SPOT" == "1" && "$INSTANCE_AFFINITY" == "co-located" ]]; then
+    # Not fatal, but this is the combination most likely to fail to launch:
+    # a cluster placement group needs capacity for both instances on one rack,
+    # which spare capacity frequently cannot satisfy.
+    log "warning: ${SCENARIO_NAME} combines USE_SPOT=1 with a cluster placement group; expect launch failures"
+  fi
   if [[ -n "$CLIENT_MACHINE_TYPE" || -n "$SERVER_MACHINE_TYPE" || -n "$CLIENT_AVAILABILITY_ZONE" || -n "$SERVER_AVAILABILITY_ZONE" ]]; then
     [[ -n "$CLIENT_MACHINE_TYPE" && -n "$SERVER_MACHINE_TYPE" && -n "$CLIENT_AVAILABILITY_ZONE" && -n "$SERVER_AVAILABILITY_ZONE" ]] || die "${scenario_file}: client/server machine types and availability zones must be set together"
   fi
@@ -168,6 +184,7 @@ run_scenario() {
     echo "  os_tuning=${OS_TUNING}"
     echo "  instance_affinity=${INSTANCE_AFFINITY}"
     echo "  cpu_idle_pinning=${CPU_IDLE_PINNING}"
+    echo "  use_spot=${USE_SPOT}"
     [[ -n "$CLIENT_MACHINE_TYPE" ]] && echo "  client_machine_type=${CLIENT_MACHINE_TYPE}"
     [[ -n "$SERVER_MACHINE_TYPE" ]] && echo "  server_machine_type=${SERVER_MACHINE_TYPE}"
     [[ -n "$CLIENT_AVAILABILITY_ZONE" ]] && echo "  client_availability_zone=${CLIENT_AVAILABILITY_ZONE}"
@@ -197,6 +214,13 @@ run_scenario() {
   merged_tfvars="$(mktemp /tmp/cloud-measuring-tfvars.XXXXXX.tfvars)"
   cp "$TFVARS_FILE" "$merged_tfvars"
   apply_tfvar_overlay "$merged_tfvars" "instance_affinity" "\"${INSTANCE_AFFINITY}\""
+  # A bool literal, not 0/1: use_spot_instances is declared type = bool and
+  # OpenTofu rejects a number there rather than coercing it.
+  if [[ "$PROVIDER" == "aws" ]]; then
+    local use_spot_literal="false"
+    [[ "$USE_SPOT" == "1" ]] && use_spot_literal="true"
+    apply_tfvar_overlay "$merged_tfvars" "use_spot_instances" "$use_spot_literal"
+  fi
   if [[ "$ACCESS_MODE" == "private" ]]; then
     apply_tfvar_overlay "$merged_tfvars" "assign_public_ip" "false"
   fi
@@ -224,6 +248,7 @@ run_scenario() {
       --os-tuning "$OS_TUNING" \
       --instance-affinity "$INSTANCE_AFFINITY" \
       --cpu-idle-pinning "$CPU_IDLE_PINNING" \
+      --use-spot "$USE_SPOT" \
       --collect-telemetry "$COLLECT_TELEMETRY" \
       --access-mode "$ACCESS_MODE" \
       ${SERVER_REGION:+--server-region "$SERVER_REGION"} \
