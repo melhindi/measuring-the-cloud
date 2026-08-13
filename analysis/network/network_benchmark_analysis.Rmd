@@ -78,6 +78,32 @@ ensure_numeric_columns("sockperf_all", c(
   "p99_rtt_us", "p999_rtt_us", "p9999_rtt_us", "p99999_rtt_us",
   "dropped_messages", "duplicated_messages", "out_of_order_messages"
 ))
+
+# The iperf3 tables need the same treatment, and for a reason that is now the
+# common case rather than a corner one: a run of the latency-vs-rate ladder
+# produces no iperf3 rows at all, so every scenario in the TCP-vs-UDP study
+# writes a header-only network_iperf3.csv. Without this, every iperf3 section
+# fails to bind -- round(VARCHAR, INTEGER) -- and takes the whole report with
+# it, including the sockperf sections that do have data.
+ensure_numeric_columns("iperf3_all", c(
+  "runtime_sec", "omit_sec", "parallel_streams",
+  "tcp_length_bytes",
+  "udp_target_bitrate_bits_per_sec", "udp_target_bitrate_gbit_per_sec",
+  "udp_length_bytes",
+  "sender_mbit_per_sec", "receiver_mbit_per_sec",
+  "sender_bytes", "receiver_bytes", "retransmits",
+  "jitter_ms", "lost_packets", "packets", "lost_percent",
+  "cpu_host_total_pct", "cpu_host_user_pct", "cpu_host_system_pct",
+  "cpu_remote_total_pct", "cpu_remote_user_pct", "cpu_remote_system_pct",
+  "server_port", "timestamp_epoch"
+))
+
+ensure_numeric_columns("iperf3_intervals_all", c(
+  "interval_index", "interval_start_sec", "interval_end_sec",
+  "interval_seconds",
+  "bits_per_second", "mbit_per_sec", "bytes", "packets", "retransmits",
+  "jitter_ms", "lost_packets", "lost_percent"
+))
 numeric_scenario_cols <- c(
   "primary_iface_mtu", "cpu_idle_deep_entries_delta",
   "tuning_rmem_max", "tuning_netdev_max_backlog",
@@ -96,9 +122,18 @@ ensure_numeric_columns("sockperf_all", numeric_scenario_cols)
 # comparisons would count that configuration twice and pull the median toward
 # whatever the control happened to measure. The Data Quality section reads the
 # *_all tables instead, because comparing the two is the whole point of it.
+# Compared as text rather than as a boolean, because the column's type is not
+# stable across result sets. read_csv_auto infers it from the data: BOOLEAN when
+# rows are present, VARCHAR when the table is empty and every column is a bare
+# header. `coalesce(is_control, false)` then binds fine on one directory and
+# fails on another.
+#
+# An empty table here is normal, not exceptional: a run of the latency-vs-rate
+# ladder produces no iperf3 rows at all, so every scenario in the TCP-vs-UDP
+# study writes an empty network_iperf3.csv.
 for (tbl in c("scenarios", "iperf3", "iperf3_intervals", "sockperf")) {
   DBI::dbExecute(con, sprintf(
-    "create view %s as select * from %s_all where coalesce(is_control, false) = false",
+    "create view %s as select * from %s_all where coalesce(lower(cast(is_control as varchar)), 'false') not in ('true', 't', '1')",
     tbl, tbl
   ))
 }
@@ -1285,6 +1320,7 @@ if (ul_any$n == 0) {
 ```{r latency-rate-curve, fig.width=14, fig.height=8}
 lat_rate <- sql("
 select placement_class, provider, protocol, offered_mps, achieved_mps,
+       received_messages / nullif(valid_duration_sec, 0) as delivered_mps,
        msg_size_bytes, p50_rtt_us, p99_rtt_us, p999_rtt_us,
        dropped_messages, cpu_idle_pinning_supported, cpu_idle_pinning_requested
 from sockperf
@@ -1293,8 +1329,9 @@ where mode = 'ul' and offered_mps is not null
 if (nrow(lat_rate) == 0) {
   no_data("No under-load sockperf rows to plot.")
 } else {
-  # Only rungs that actually delivered their offered load are interpretable.
-  lat_rate$delivered_pct <- 100 * lat_rate$achieved_mps / lat_rate$offered_mps
+  # Only rungs that actually delivered their offered load are interpretable,
+  # measured on arrivals rather than sends -- see the protocol-delta query.
+  lat_rate$delivered_pct <- 100 * lat_rate$delivered_mps / lat_rate$offered_mps
   usable <- lat_rate[!is.na(lat_rate$delivered_pct) & lat_rate$delivered_pct >= ul_min_delivered, ]
   dropped_rungs <- nrow(lat_rate) - nrow(usable)
 
@@ -1342,13 +1379,27 @@ proto_delta <- sql(sprintf("
 select placement_class, provider, offered_mps,
        round(median(case when protocol = 'tcp' then achieved_mps end), 0) as tcp_achieved,
        round(median(case when protocol = 'udp' then achieved_mps end), 0) as udp_achieved,
+       -- Delivered, not sent. achieved_mps counts messages the generator put on
+       -- the wire; a UDP arm can hit any offered rate by dropping the excess,
+       -- and on a real run it did -- 100k offered, 100k sent, 92.7k received.
+       -- Comparing on sent rate would call that arm load-matched with a TCP arm
+       -- carrying 7.3%% more traffic, and attribute the resulting latency
+       -- difference to the transport. This is the quantity the two protocols
+       -- must actually agree on.
+       round(median(case when protocol = 'tcp' then received_messages / nullif(valid_duration_sec, 0) end), 0) as tcp_delivered,
+       round(median(case when protocol = 'udp' then received_messages / nullif(valid_duration_sec, 0) end), 0) as udp_delivered,
        round(median(case when protocol = 'tcp' then p50_rtt_us end), 1) as tcp_p50,
        round(median(case when protocol = 'udp' then p50_rtt_us end), 1) as udp_p50,
        round(median(case when protocol = 'tcp' then p99_rtt_us end), 1) as tcp_p99,
        round(median(case when protocol = 'udp' then p99_rtt_us end), 1) as udp_p99
 from sockperf
 where mode = 'ul' and offered_mps is not null
-  and achieved_mps >= %.4f * offered_mps
+  -- Admission is on messages that arrived, for the same reason the comparison
+  -- is. A percentile computed over a stream that lost 7%% of its messages
+  -- describes the survivors, and the lost ones are not a random sample -- they
+  -- are disproportionately the ones that would have been slowest. UDP's tail is
+  -- therefore flattered by its own loss, which is the opposite of conservative.
+  and received_messages / nullif(valid_duration_sec, 0) >= %.4f * offered_mps
 group by 1, 2, 3
 order by 1, 2, 3
 ", ul_min_delivered / 100))
@@ -1359,12 +1410,19 @@ if (nrow(proto_delta) == 0) {
     ul_min_delivered))
 } else {
   # Both arms must exist before a delta means anything.
-  both_present <- !is.na(proto_delta$tcp_achieved) & !is.na(proto_delta$udp_achieved)
-  mean_achieved <- (proto_delta$tcp_achieved + proto_delta$udp_achieved) / 2
+  both_present <- !is.na(proto_delta$tcp_delivered) & !is.na(proto_delta$udp_delivered)
+  mean_delivered <- (proto_delta$tcp_delivered + proto_delta$udp_delivered) / 2
   proto_delta$rate_gap_pct <- ifelse(
     both_present,
-    round(100 * abs(proto_delta$tcp_achieved - proto_delta$udp_achieved) /
-            pmax(mean_achieved, 1), 1),
+    round(100 * abs(proto_delta$tcp_delivered - proto_delta$udp_delivered) /
+            pmax(mean_delivered, 1), 1),
+    NA_real_)
+  # Loss is reported alongside, because a rung can pass the gap test while both
+  # arms lose traffic, and a comparison of two degraded arms is not the same
+  # claim as a comparison of two healthy ones.
+  proto_delta$udp_loss_pct <- ifelse(
+    !is.na(proto_delta$udp_achieved) & proto_delta$udp_achieved > 0,
+    round(100 * (1 - proto_delta$udp_delivered / proto_delta$udp_achieved), 2),
     NA_real_)
 
   comparable <- both_present &
@@ -1384,7 +1442,7 @@ if (nrow(proto_delta) == 0) {
 
   proto_delta <- proto_delta[, c(
     "placement_class", "provider", "offered_mps",
-    "tcp_achieved", "udp_achieved", "rate_gap_pct",
+    "tcp_delivered", "udp_delivered", "rate_gap_pct", "udp_loss_pct",
     "tcp_p50", "udp_p50", "p50_udp_advantage_pct",
     "tcp_p99", "udp_p99", "p99_udp_advantage_pct",
     "comparable")]
@@ -1393,19 +1451,21 @@ if (nrow(proto_delta) == 0) {
   if (n_bad > 0) {
     cat(sprintf(
       paste0("%d of %d rungs are not comparable and have a blank advantage.\n\n",
-             "This is the check that keeps the headline honest. Latency against ",
-             "offered rate is superlinear near the knee, so if TCP delivered %g%% ",
-             "of a rung and UDP delivered 100%%, the two arms were carrying ",
-             "materially different load and part of any latency gap is that load ",
-             "difference rather than the transport. TCP is the arm more likely to ",
-             "fall short, so accepting mismatched rungs biases the result toward ",
-             "UDP by construction. A rung is compared here only when the achieved ",
-             "rates agree within %g%%.\n\n"),
+             "This is the check that keeps the headline honest, and it compares ",
+             "delivered rate rather than sent rate. UDP does not fall behind when ",
+             "it is overloaded -- it drops, and keeps sending at the requested ",
+             "rate. So a UDP arm reports a healthy achieved rate while carrying ",
+             "less traffic end to end than the TCP arm it is being compared with, ",
+             "and any latency advantage it then shows is partly the traffic it ",
+             "never delivered. Latency against rate is superlinear near the knee, ",
+             "so a few percent of load is not a few percent of latency. A rung is ",
+             "compared here only when both arms delivered at least %g%% of the ",
+             "offered rate and their delivered rates agree within %g%%.\n\n"),
       n_bad, nrow(proto_delta), ul_min_delivered, ul_max_rate_gap))
   }
 
   kable(proto_delta, caption = sprintf(
-    "TCP vs UDP at matched achieved rate. Positive advantage means UDP is lower. Rungs are admitted only if both arms delivered >=%g%% of the offered rate and their achieved rates agree within %g%%; the advantage is blank otherwise. Read down a column: a difference that appears only at higher rungs is the transport cost ping-pong cannot see.",
+    "TCP vs UDP at matched delivered rate. tcp_delivered/udp_delivered are messages that arrived, not messages sent; udp_loss_pct is the gap between the two for UDP. Positive advantage means UDP is lower. Rungs are admitted only if both arms delivered >=%g%% of the offered rate and their delivered rates agree within %g%%; the advantage is blank otherwise. Read down a column: a difference that appears only at higher rungs is the transport cost ping-pong cannot see.",
     ul_min_delivered, ul_max_rate_gap))
 }
 ```
