@@ -202,7 +202,15 @@ run_scenario() {
   [[ -n "$BLOCK_VOLUME_TYPE" ]] && apply_tfvar_overlay "$merged_tfvars" "benchmark_block_volume_type" "\"${BLOCK_VOLUME_TYPE}\""
   [[ -n "$BLOCK_VOLUME_IOPS" ]] && apply_tfvar_overlay "$merged_tfvars" "benchmark_block_volume_iops" "${BLOCK_VOLUME_IOPS}"
   [[ -n "$BLOCK_VOLUME_THROUGHPUT_MBPS" ]] && apply_tfvar_overlay "$merged_tfvars" "benchmark_block_volume_throughput_mbps" "${BLOCK_VOLUME_THROUGHPUT_MBPS}"
-  [[ "$PROVIDER" == "aws" ]] && apply_tfvar_overlay "$merged_tfvars" "use_spot_instances" "${USE_SPOT}"
+  # use_spot_instances is declared type = bool, and OpenTofu rejects a number
+  # there ("Invalid value for input variable") rather than coercing it, so the
+  # 0/1 scenario flag has to become a bool literal. The other bool overlays in
+  # this file and in network/runner.sh already write true/false directly.
+  if [[ "$PROVIDER" == "aws" ]]; then
+    local use_spot_literal="false"
+    [[ "$USE_SPOT" == "1" ]] && use_spot_literal="true"
+    apply_tfvar_overlay "$merged_tfvars" "use_spot_instances" "$use_spot_literal"
+  fi
   apply_tfvar_overlay "$merged_tfvars" "benchmark_local_filesystem" "\"${LOCAL_FILESYSTEM}\""
   apply_tfvar_overlay "$merged_tfvars" "benchmark_block_filesystem" "\"${BLOCK_FILESYSTEM}\""
   apply_tfvar_overlay "$merged_tfvars" "benchmark_root_volume_size_gib" "${BENCHMARK_ROOT_VOLUME_SIZE_GIB}"
