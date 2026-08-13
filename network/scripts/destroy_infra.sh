@@ -34,4 +34,4 @@ require_file "$TFVARS_FILE"
 
 tofu="$(tofu_bin)"
 log "destroying ${TOFU_DIR}"
-"$tofu" -chdir="$TOFU_DIR" destroy -auto-approve -var-file="$TFVARS_FILE"
+tofu_with_retry "$tofu" -chdir="$TOFU_DIR" destroy -auto-approve -var-file="$TFVARS_FILE"

@@ -167,6 +167,38 @@ tofu_bin() {
   fi
 }
 
+# Run a tofu command, retrying a transient provider failure.
+#
+# Providers fail intermittently in ways a second attempt resolves. The STACKIT
+# provider returns "Provider produced inconsistent result after apply" on
+# network creation -- twice in four applies during smoke testing, each time
+# leaving partially created resources behind. Capacity errors on spot or in a
+# pinned availability zone behave the same way.
+#
+# Retrying is safe because apply and destroy are convergent: the next attempt
+# continues from recorded state rather than starting over, so a partial apply is
+# completed rather than duplicated. A failure that is not transient still fails,
+# just after TOFU_MAX_ATTEMPTS tries.
+tofu_with_retry() {
+  local attempts="${TOFU_MAX_ATTEMPTS:-3}"
+  local delay="${TOFU_RETRY_DELAY_SEC:-15}"
+  local attempt=1
+  local rc=0
+
+  while :; do
+    rc=0
+    "$@" || rc=$?
+    [[ "$rc" -eq 0 ]] && return 0
+    if (( attempt >= attempts )); then
+      log "tofu attempt ${attempt}/${attempts} failed with status ${rc}; giving up"
+      return "$rc"
+    fi
+    log "tofu attempt ${attempt}/${attempts} failed with status ${rc}; retrying in ${delay}s"
+    sleep "$delay"
+    attempt=$((attempt + 1))
+  done
+}
+
 tofu_output_raw() {
   local tofu="$1"
   local tofu_dir="$2"

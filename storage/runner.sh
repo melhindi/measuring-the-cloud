@@ -218,6 +218,15 @@ run_scenario() {
   if [[ "$ACCESS_MODE" == "private" ]]; then
     apply_tfvar_overlay "$merged_tfvars" "assign_public_ip" "false"
   fi
+  # Persist the overlaid values next to the run's artifacts before provisioning.
+  # The merged file is a temp file removed when this function returns, and the
+  # scenario's required variables (benchmark_machine_type, benchmark_image_id)
+  # exist only in the overlay -- so after a failed apply there is nothing left
+  # that can destroy what was created, and cleanup means reconstructing them by
+  # hand. This file is exactly what was applied, which also makes it provenance.
+  local persisted_tfvars="${LOCAL_RUN_DIR}/${SCENARIO_NAME}.tfvars"
+  mkdir -p "$LOCAL_RUN_DIR"
+  cp "$merged_tfvars" "$persisted_tfvars"
   trap 'rm -f "${merged_tfvars:-}"' RETURN
 
   "${SCRIPT_DIR}/scripts/setup_infra.sh" --tofu-dir "$TOFU_DIR" --tfvars-file "$merged_tfvars" || setup_rc=$?
@@ -251,6 +260,10 @@ run_scenario() {
 
   if [[ "$setup_rc" -ne 0 || "$bench_rc" -ne 0 || "$fetch_rc" -ne 0 || "$destroy_rc" -ne 0 ]]; then
     log "scenario ${SCENARIO_NAME} failed: setup=${setup_rc} benchmark=${bench_rc} fetch=${fetch_rc} destroy=${destroy_rc}"
+    if [[ "$DESTROY_MODE" != "always" ]] || [[ "$destroy_rc" -ne 0 ]]; then
+      log "resources may still exist; clean up with:"
+      log "  ./storage/scripts/destroy_infra.sh --tofu-dir ${TOFU_DIR} --tfvars-file ${persisted_tfvars}"
+    fi
     return 1
   fi
 

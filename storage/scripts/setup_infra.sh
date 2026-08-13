@@ -36,4 +36,4 @@ tofu="$(tofu_bin)"
 log "initializing ${TOFU_DIR}"
 "$tofu" -chdir="$TOFU_DIR" init
 log "applying ${TFVARS_FILE}"
-"$tofu" -chdir="$TOFU_DIR" apply -auto-approve -var-file="$TFVARS_FILE"
+tofu_with_retry "$tofu" -chdir="$TOFU_DIR" apply -auto-approve -var-file="$TFVARS_FILE"

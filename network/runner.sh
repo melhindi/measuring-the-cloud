@@ -236,6 +236,12 @@ run_scenario() {
   if [[ -n "${ENABLE_TIER1_NETWORKING:-}" ]]; then
     apply_tfvar_overlay "$merged_tfvars" "enable_tier1_networking" "${ENABLE_TIER1_NETWORKING}"
   fi
+  # Persist the overlaid values next to the run's artifacts; see the equivalent
+  # note in storage/runner.sh. Without this, cleanup after a failed apply has to
+  # reconstruct the overlay by hand.
+  local persisted_tfvars="${LOCAL_RUN_DIR}/${SCENARIO_NAME}.tfvars"
+  mkdir -p "$LOCAL_RUN_DIR"
+  cp "$merged_tfvars" "$persisted_tfvars"
   trap 'rm -f "${merged_tfvars:-}"' RETURN
 
   "${SCRIPT_DIR}/scripts/setup_infra.sh" --tofu-dir "$TOFU_DIR" --tfvars-file "$merged_tfvars" || setup_rc=$?
@@ -271,6 +277,10 @@ run_scenario() {
 
   if [[ "$setup_rc" -ne 0 || "$bench_rc" -ne 0 || "$fetch_rc" -ne 0 || "$destroy_rc" -ne 0 ]]; then
     log "scenario ${SCENARIO_NAME} failed: setup=${setup_rc} benchmark=${bench_rc} fetch=${fetch_rc} destroy=${destroy_rc}"
+    if [[ "$DESTROY_MODE" != "always" ]] || [[ "$destroy_rc" -ne 0 ]]; then
+      log "resources may still exist; clean up with:"
+      log "  ./network/scripts/destroy_infra.sh --tofu-dir ${TOFU_DIR} --tfvars-file ${persisted_tfvars}"
+    fi
     return 1
   fi
 
