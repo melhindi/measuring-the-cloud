@@ -104,13 +104,23 @@ preflight_scenarios() {
   local -A seen_names=()
   local -a duplicates=()
   local -a missing_tfvars=()
-  local file meta name tfvars skip resolved
+  local file name tfvars skip resolved
+  local -a meta=()
 
   for file in "$@"; do
     # Sourced in a child shell so scenario variables cannot leak into the runner
     # or into the next scenario's evaluation.
-    meta="$(bash -c 'source "$1" >/dev/null 2>&1 || true; printf "%s\t%s\t%s" "${SCENARIO_NAME:-}" "${TFVARS_FILE:-}" "${SKIP:-0}"' _ "$file" 2>/dev/null || true)"
-    IFS=$'\t' read -r name tfvars skip <<<"$meta"
+    #
+    # One field per line rather than a delimited record: tab is IFS whitespace,
+    # so `IFS=$'\t' read` collapses consecutive separators and an empty
+    # TFVARS_FILE would shift SKIP into its place, reporting a missing tfvars
+    # named "0". SCENARIO_NAME is charset-validated by the runner and paths here
+    # do not contain newlines.
+    meta=()
+    mapfile -t meta < <(bash -c 'source "$1" >/dev/null 2>&1 || true; printf "%s\n%s\n%s\n" "${SCENARIO_NAME:-}" "${TFVARS_FILE:-}" "${SKIP:-0}"' _ "$file" 2>/dev/null || true)
+    name="${meta[0]:-}"
+    tfvars="${meta[1]:-}"
+    skip="${meta[2]:-0}"
 
     [[ "${skip:-0}" == "1" ]] && continue
     [[ -n "$name" ]] || continue
