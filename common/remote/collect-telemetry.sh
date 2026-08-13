@@ -80,6 +80,17 @@ case "$ACTION" in
         if command -v ss >/dev/null 2>&1; then
           printf "# %s\n" "$ts" >>"${out}/ss.log"
           ss -tinH >>"${out}/ss.log" 2>/dev/null
+          # UDP sockets in their own file. -t is TCP-only, which left a
+          # TCP-vs-UDP study able to reconstruct one transport in detail --
+          # send queue, congestion window, retransmits -- and nothing at all
+          # for the other. A real run lost 7.3 percent of UDP messages entirely
+          # to receive-buffer overflow; -m adds skmem, whose rb is the receive
+          # buffer size and whose d is the per-socket drop count, so the buffer
+          # can be watched filling rather than inferred from counters after the
+          # fact. No apostrophes here: this block is inside a single-quoted
+          # bash -c and one would end the string.
+          printf "# %s\n" "$ts" >>"${out}/ss-udp.log"
+          ss -uanm >>"${out}/ss-udp.log" 2>/dev/null
         fi
         if command -v nstat >/dev/null 2>&1; then
           printf "# %s\n" "$ts" >>"${out}/nstat.log"
