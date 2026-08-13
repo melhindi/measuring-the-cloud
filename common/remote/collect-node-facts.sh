@@ -105,35 +105,45 @@ cpufreq_facts() {
 # spare capacity and therefore influences which physical host you land on, so a
 # comparison whose arms span both models has an uncontrolled variable in it --
 # which is only detectable if the model is recorded per node.
+# Fetch one metadata value, or nothing.
+#
+# -f matters: GCP and OpenStack also answer on 169.254.169.254, and the AWS
+# paths there return 404 with an HTML body. Without --fail curl exits 0 and that
+# body is captured as if it were a value -- which makes the AWS branch look
+# successful on GCP, suppresses the GCP branch, and writes markup into the env
+# file. The shape check is the second line of defence, for an error page that
+# returns 200: a metadata value is one short token, never markup or multi-line.
+meta_get() {
+  local out
+  out="$(curl -fsS -m 1 "$@" 2>/dev/null || true)"
+  [[ "$out" == *"<"* ]] && return 0
+  [[ "$out" == *$'\n'* ]] && return 0
+  printf '%s' "$out"
+}
+
 cloud_identity() {
   local token image instance purchase
 
   # AWS IMDSv2, falling back to IMDSv1 for images that still allow it.
-  token="$(curl -s -m 1 -X PUT 'http://169.254.169.254/latest/api/token' \
-    -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' 2>/dev/null || true)"
+  token="$(meta_get -X PUT 'http://169.254.169.254/latest/api/token' \
+    -H 'X-aws-ec2-metadata-token-ttl-seconds: 60')"
   if [[ -n "$token" ]]; then
-    image="$(curl -s -m 1 -H "X-aws-ec2-metadata-token: ${token}" \
-      'http://169.254.169.254/latest/meta-data/ami-id' 2>/dev/null || true)"
-    instance="$(curl -s -m 1 -H "X-aws-ec2-metadata-token: ${token}" \
-      'http://169.254.169.254/latest/meta-data/instance-type' 2>/dev/null || true)"
+    image="$(meta_get -H "X-aws-ec2-metadata-token: ${token}" 'http://169.254.169.254/latest/meta-data/ami-id')"
+    instance="$(meta_get -H "X-aws-ec2-metadata-token: ${token}" 'http://169.254.169.254/latest/meta-data/instance-type')"
     # "spot" or "on-demand".
-    purchase="$(curl -s -m 1 -H "X-aws-ec2-metadata-token: ${token}" \
-      'http://169.254.169.254/latest/meta-data/instance-life-cycle' 2>/dev/null || true)"
+    purchase="$(meta_get -H "X-aws-ec2-metadata-token: ${token}" 'http://169.254.169.254/latest/meta-data/instance-life-cycle')"
   else
-    image="$(curl -s -m 1 'http://169.254.169.254/latest/meta-data/ami-id' 2>/dev/null || true)"
-    instance="$(curl -s -m 1 'http://169.254.169.254/latest/meta-data/instance-type' 2>/dev/null || true)"
-    purchase="$(curl -s -m 1 'http://169.254.169.254/latest/meta-data/instance-life-cycle' 2>/dev/null || true)"
+    image="$(meta_get 'http://169.254.169.254/latest/meta-data/ami-id')"
+    instance="$(meta_get 'http://169.254.169.254/latest/meta-data/instance-type')"
+    purchase="$(meta_get 'http://169.254.169.254/latest/meta-data/instance-life-cycle')"
   fi
 
   # GCP. Spot and legacy preemptible VMs both report preemptible = TRUE.
   if [[ -z "$image" ]]; then
-    image="$(curl -s -m 1 -H 'Metadata-Flavor: Google' \
-      'http://metadata.google.internal/computeMetadata/v1/instance/image' 2>/dev/null || true)"
-    instance="$(curl -s -m 1 -H 'Metadata-Flavor: Google' \
-      'http://metadata.google.internal/computeMetadata/v1/instance/machine-type' 2>/dev/null || true)"
+    image="$(meta_get -H 'Metadata-Flavor: Google' 'http://metadata.google.internal/computeMetadata/v1/instance/image')"
+    instance="$(meta_get -H 'Metadata-Flavor: Google' 'http://metadata.google.internal/computeMetadata/v1/instance/machine-type')"
     local preemptible
-    preemptible="$(curl -s -m 1 -H 'Metadata-Flavor: Google' \
-      'http://metadata.google.internal/computeMetadata/v1/instance/scheduling/preemptible' 2>/dev/null || true)"
+    preemptible="$(meta_get -H 'Metadata-Flavor: Google' 'http://metadata.google.internal/computeMetadata/v1/instance/scheduling/preemptible')"
     case "${preemptible^^}" in
       TRUE) purchase="spot" ;;
       FALSE) purchase="on-demand" ;;
@@ -143,7 +153,7 @@ cloud_identity() {
   # OpenStack (STACKIT). No spot market exists, so anything here is on-demand.
   if [[ -z "$image" ]]; then
     local meta
-    meta="$(curl -s -m 1 'http://169.254.169.254/openstack/latest/meta_data.json' 2>/dev/null || true)"
+    meta="$(curl -fsS -m 1 'http://169.254.169.254/openstack/latest/meta_data.json' 2>/dev/null || true)"
     if [[ -n "$meta" ]] && command -v jq >/dev/null 2>&1; then
       image="$(printf '%s' "$meta" | jq -r '.image_id // empty' 2>/dev/null || true)"
       instance="$(printf '%s' "$meta" | jq -r '.flavor // .meta.flavor // empty' 2>/dev/null || true)"
