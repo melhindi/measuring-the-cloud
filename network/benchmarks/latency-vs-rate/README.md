@@ -33,6 +33,15 @@ Three properties, each load-bearing:
    rungs lead TCP, three lead UDP, and monotonic drift cancels across the ladder
    rather than accumulating in one protocol's favour.
 
+4. **`throughput-iperf3-tcp.sh` sorts after every `sockperf-` arm**, which is
+   why it is named for what it measures rather than for the tool. It records the
+   capacity the ladder was operating inside, so a rise in latency at the top
+   rungs can be attributed to packet rate or endpoint processing rather than to
+   a saturated link. It must run last: a 10 Gbit/s transfer leaves congestion
+   windows, queues and interrupt-coalescing state nothing like an idle link, and
+   running it first would contaminate the latency arms that are the point of the
+   directory.
+
 `BENCHMARK_NAME` intentionally omits the position token -- it names the
 measurement (`...-tcp`), not the slot it ran in, so reports and artifact
 directories stay readable and a rung compares against itself across runs even if
