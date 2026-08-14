@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Cross-region: us-east4-a to us-west1-a.
+# Cross-region: us-east4-c to us-west1-a.
 #
 # Deliberately the same physical corridor as the AWS cross-region scenario.
 # us-east4 is Ashburn, Northern Virginia and us-west1 is The Dalles, Oregon --
@@ -13,13 +13,13 @@
 # the two would have attributed a distance difference to the provider.
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/common.inc"
 
-SCENARIO_NAME=gcp_n2-standard-2_us-east4-a_us-west1-a_none_standard_ladder
+SCENARIO_NAME=gcp_n2-standard-2_us-east4-c_us-west1-a_none_standard_ladder
 OS_TUNING=standard
 INSTANCE_AFFINITY=none
 CLIENT_MACHINE_TYPE=n2-standard-2
 SERVER_MACHINE_TYPE=n2-standard-2
 CLIENT_REGION=us-east4
-CLIENT_AVAILABILITY_ZONE=us-east4-a
+CLIENT_AVAILABILITY_ZONE=us-east4-c
 SERVER_AVAILABILITY_ZONE=us-west1-a
 SERVER_REGION=us-west1
 PLACEMENT_MODE=cross-region
