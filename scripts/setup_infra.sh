@@ -34,6 +34,10 @@ require_file "$TFVARS_FILE"
 
 tofu="$(tofu_bin)"
 log "initializing ${TOFU_DIR}"
-"$tofu" -chdir="$TOFU_DIR" init
+# Retried like apply and destroy, and arguably more in need of it: init is the
+# only step that reaches the provider registry over the internet, where apply
+# and destroy talk to the cloud API. A transient "connection reset by peer"
+# resolving hashicorp/google killed a scenario outright before this.
+tofu_with_retry "$tofu" -chdir="$TOFU_DIR" init
 log "applying ${TFVARS_FILE}"
 tofu_with_retry "$tofu" -chdir="$TOFU_DIR" apply -auto-approve -var-file="$TFVARS_FILE"
