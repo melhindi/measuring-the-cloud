@@ -571,6 +571,32 @@ where protocol = 'udp'
 group by 1, 2, 3, 4, 5, 6
 order by placement_class, client_machine_type, os_tuning, target_gbps, udp_length_bytes, parallel_streams
 ", ref_udp_length_bytes))
+
+# Every UDP section below filters on one reference datagram size, so a result
+# set whose UDP arms used a different one renders as a series of empty tables
+# with nothing to say why. That is the same silent-omission failure as a run
+# whose artifacts were skipped: the report looks complete and is not.
+#
+# The capacity arms added to the latency ladder use 1472 B (1472 + 8 + 20 = 1500,
+# the largest datagram that crosses a standard MTU without fragmenting), while
+# the older suite used 1492. Whichever a result set contains, say so rather than
+# showing a blank table.
+udp_lengths_present <- sql("
+select udp_length_bytes, count(*) as n
+from iperf3 where protocol = 'udp' and udp_length_bytes is not null
+group by 1 order by 1
+")
+if (nrow(udp_placement_summary) == 0 && nrow(udp_lengths_present) > 0) {
+  cat(sprintf(
+    paste0("No UDP rows at the configured reference length of %s B, but this result ",
+           "set does contain UDP arms at: %s.\n\nThe UDP sections that follow are ",
+           "filtered to one datagram size so their rows stay comparable, and they ",
+           "will be empty until reference_udp_length_bytes matches. Re-render with ",
+           "--config setting it to the length above.\n\n"),
+    ref_udp_length_bytes,
+    paste(sprintf("%s B (%d rows)", udp_lengths_present$udp_length_bytes, udp_lengths_present$n),
+          collapse = ", ")))
+}
 kable(udp_placement_summary, caption = sprintf("UDP throughput, loss, and jitter by placement and benchmark parameters; fixed udp_length_bytes = %s", ref_udp_length_bytes))
 ```
 
@@ -878,7 +904,13 @@ with base as (
   select placement_class, os_tuning, protocol, msg_size_bytes,
          avg_rtt_us, p50_rtt_us, p99_rtt_us, p999_rtt_us
   from sockperf
-  where client_machine_type = %s
+  -- Ping-pong only. These comparisons predate the rate ladder and were written when
+  -- a run produced one operating point; a scenario now also emits twelve under-load
+  -- arms at the same message size, and without this filter their rows -- spanning
+  -- 1k to 100k msg/s -- would be pooled into the same distribution as the idle
+  -- measurement. Under-load results have their own section.
+  where mode = 'pp'
+    and client_machine_type = %s
     and placement_class in ('co-located-single-az', 'different-host-single-az')
     and msg_size_bytes in (64, 8192)
     and os_tuning = 'standard'
@@ -927,7 +959,13 @@ with base as (
   select placement_class, os_tuning, protocol, msg_size_bytes,
          avg_rtt_us, p50_rtt_us, p99_rtt_us, p999_rtt_us
   from sockperf
-  where client_machine_type = %s
+  -- Ping-pong only. These comparisons predate the rate ladder and were written when
+  -- a run produced one operating point; a scenario now also emits twelve under-load
+  -- arms at the same message size, and without this filter their rows -- spanning
+  -- 1k to 100k msg/s -- would be pooled into the same distribution as the idle
+  -- measurement. Under-load results have their own section.
+  where mode = 'pp'
+    and client_machine_type = %s
     and placement_class in ('different-host-single-az', 'multi-az')
     and msg_size_bytes in (64, 8192)
     and os_tuning = 'standard'
@@ -978,7 +1016,13 @@ with base as (
   select placement_class, os_tuning, protocol, msg_size_bytes,
          avg_rtt_us, p50_rtt_us, p99_rtt_us, p999_rtt_us
   from sockperf
-  where client_machine_type = %s
+  -- Ping-pong only. These comparisons predate the rate ladder and were written when
+  -- a run produced one operating point; a scenario now also emits twelve under-load
+  -- arms at the same message size, and without this filter their rows -- spanning
+  -- 1k to 100k msg/s -- would be pooled into the same distribution as the idle
+  -- measurement. Under-load results have their own section.
+  where mode = 'pp'
+    and client_machine_type = %s
     and placement_class in ('co-located-single-az', 'different-host-single-az')
     and msg_size_bytes in (64, 8192)
     and os_tuning = 'tuned'
@@ -1027,7 +1071,13 @@ with base as (
   select placement_class, os_tuning, protocol, msg_size_bytes,
          avg_rtt_us, p50_rtt_us, p99_rtt_us, p999_rtt_us
   from sockperf
-  where client_machine_type = %s
+  -- Ping-pong only. These comparisons predate the rate ladder and were written when
+  -- a run produced one operating point; a scenario now also emits twelve under-load
+  -- arms at the same message size, and without this filter their rows -- spanning
+  -- 1k to 100k msg/s -- would be pooled into the same distribution as the idle
+  -- measurement. Under-load results have their own section.
+  where mode = 'pp'
+    and client_machine_type = %s
     and placement_class in ('different-host-single-az', 'multi-az')
     and msg_size_bytes in (64, 8192)
     and os_tuning = 'tuned'
@@ -1077,7 +1127,13 @@ lat_instance <- sql(sprintf("
 select placement_class, client_machine_type, os_tuning, protocol, msg_size_bytes,
        avg_rtt_us, p50_rtt_us, p99_rtt_us
 from sockperf
-where placement_class = %s
+-- Ping-pong only. These comparisons predate the rate ladder and were written when
+-- a run produced one operating point; a scenario now also emits twelve under-load
+-- arms at the same message size, and without this filter their rows -- spanning
+-- 1k to 100k msg/s -- would be pooled into the same distribution as the idle
+-- measurement. Under-load results have their own section.
+where mode = 'pp'
+  and placement_class = %s
   and msg_size_bytes = %s
 ", q_placement, ref_msg_size_bytes))
 if (nrow(lat_instance) == 0) {
@@ -1144,7 +1200,13 @@ lat_msg <- sql(sprintf("
 select placement_class, os_tuning, protocol, msg_size_bytes,
        p50_rtt_us, p99_rtt_us, p999_rtt_us
 from sockperf
-where os_tuning = %s
+-- Ping-pong only. These comparisons predate the rate ladder and were written when
+-- a run produced one operating point; a scenario now also emits twelve under-load
+-- arms at the same message size, and without this filter their rows -- spanning
+-- 1k to 100k msg/s -- would be pooled into the same distribution as the idle
+-- measurement. Under-load results have their own section.
+where mode = 'pp'
+  and os_tuning = %s
   and client_machine_type = %s
 ", q_tuning, q_large))
 if (nrow(lat_msg) == 0) {
