@@ -199,6 +199,91 @@ tofu_with_retry() {
   done
 }
 
+# Wall-clock bound for one benchmark invocation, derived from what that
+# benchmark was configured to do.
+#
+# A benchmark that has stopped making progress cannot be detected by watching
+# it: the local side is blocked in ssh with nothing to observe until the command
+# returns. The only signal available is that it has been running longer than it
+# could legitimately need, so the bound has to come from the configuration
+# rather than from a fixed number someone has to tune per arm. A 30 s arm gets
+# 210 s, a 300 s arm gets 1020 s, and neither needs revisiting when the other
+# changes.
+#
+# The multiplier is generous on purpose. Overshooting costs minutes on a run
+# that was already broken; undershooting kills a slow but healthy measurement
+# and silently biases the results toward whatever completes quickly.
+step_timeout_sec() {
+  local runtime="${1:-0}"
+  local floor="${STEP_TIMEOUT_FLOOR_SEC:-180}"
+  [[ "$runtime" =~ ^[0-9]+$ ]] || runtime=0
+  local computed=$(( runtime * 3 + 120 ))
+  if (( computed > floor )); then printf '%s\n' "$computed"; else printf '%s\n' "$floor"; fi
+}
+
+# Warn when a run stops writing to its log.
+#
+# Complements the per-step bound above rather than duplicating it. The bound
+# covers the benchmark invocations, where a hang is expensive and the expected
+# duration is known. This covers everything else -- fetch, destroy, provisioning
+# -- where no such expectation exists and killing on a timer would be wrong,
+# because a tofu apply legitimately taking six minutes is indistinguishable in
+# advance from one that is stuck.
+#
+# So this only reports. A run writes to its log at least once per repetition, so
+# silence beyond the threshold means stuck rather than slow, and that is a fact
+# worth putting in the log even when nobody is watching -- the alternative is a
+# 30-minute gap in the timestamps that has to be reconstructed afterwards.
+start_stale_watchdog() {
+  local log_file="$1"
+  local threshold="${2:-${STALE_WATCHDOG_SEC:-600}}"
+  # Overridable so the warning path can be exercised in seconds rather than in
+  # ten minutes. The IRQ collector in this repository shipped a silent failure
+  # because it could not be run anywhere but the machine it was written for.
+  local interval="${STALE_WATCHDOG_INTERVAL_SEC:-60}"
+  [[ -n "$log_file" ]] || return 0
+  command -v stat >/dev/null 2>&1 || return 0
+
+  (
+    local last_warned=0 now last age
+    while :; do
+      sleep "$interval"
+      [[ -f "$log_file" ]] || continue
+      now="$(date +%s)"
+      last="$(stat -c %Y "$log_file" 2>/dev/null || printf '%s' "$now")"
+      age=$(( now - last ))
+      if (( age >= threshold )) && (( now - last_warned >= threshold )); then
+        printf '[%s] WARNING: no progress logged for %ss; a step may be stuck (watchdog)\n' \
+          "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$age" >&2
+        last_warned="$now"
+      fi
+    done
+  # stdout closed deliberately. The caller captures the pid with $(...), and a
+  # background child that inherits that command substitution's stdout keeps the
+  # pipe open -- so $(...) waits for a process designed never to exit, and the
+  # run hangs before it starts. Warnings go to stderr, which is unaffected.
+  ) >/dev/null &
+  printf '%s\n' "$!"
+}
+
+stop_stale_watchdog() {
+  local pid="${1:-}"
+  [[ -n "$pid" ]] || return 0
+  kill "$pid" 2>/dev/null || return 0
+
+  # Polled rather than waited on. start_stale_watchdog runs inside a command
+  # substitution, so the watchdog is a grandchild of the caller and `wait`
+  # returns immediately without reaping it -- which makes an immediate liveness
+  # check race the process's own death. Escalate only if TERM is ignored, so a
+  # watchdog mid-write is not cut off before its warning lands.
+  local i
+  for i in 1 2 3 4 5; do
+    kill -0 "$pid" 2>/dev/null || return 0
+    sleep 0.2
+  done
+  kill -KILL "$pid" 2>/dev/null || true
+}
+
 tofu_output_raw() {
   local tofu="$1"
   local tofu_dir="$2"

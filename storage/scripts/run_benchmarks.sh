@@ -138,6 +138,15 @@ ssh_run() {
   mapfile -t ssh_opts < <(ssh_base_args "$SSH_KEY" "$KNOWN_HOSTS_FILE")
   local cmd
   cmd=(ssh "${ssh_opts[@]}" "${SSH_USER}@${host}" "$@")
+  # An optional wall-clock bound, set by the caller around invocations whose
+  # legitimate duration is known. A benchmark that finished its measurement but
+  # never exited held one run open for 30 minutes with instances billing; the
+  # measurement had already been written, so terminating the ssh loses nothing
+  # and the repetition is recorded as failed by the existing handling.
+  if [[ -n "${SSH_TIMEOUT_SEC:-}" ]] && [[ "${SSH_TIMEOUT_SEC}" =~ ^[0-9]+$ ]] \
+     && (( SSH_TIMEOUT_SEC > 0 )) && command -v timeout >/dev/null 2>&1; then
+    cmd=(timeout --signal=TERM --kill-after=15 "$SSH_TIMEOUT_SEC" "${cmd[@]}")
+  fi
   if [[ -n "$COMMAND_LOG" ]]; then
     append_command_log "$COMMAND_LOG" "${cmd[@]}"
   fi
@@ -467,9 +476,18 @@ run_one_fio_repetition() {
   fi
 
   set +e
+  # Bounded for the same reason as the network benchmarks: a tool that stops
+  # making progress cannot be observed from here, only outlived. fio writes its
+  # JSON before exiting, so a terminated run loses the repetition, not the data
+  # already on disk.
+  SSH_TIMEOUT_SEC="$(step_timeout_sec "$FIO_RUNTIME_SEC")"
   ssh_run "$BENCHMARK_HOST" "$(shell_join "${fio_cmd[@]}")"
   local rc=$?
+  SSH_TIMEOUT_SEC=""
   set -e
+  if [[ "$rc" -eq 124 ]]; then
+    log "fio exceeded its time bound and was terminated; recording the repetition as failed"
+  fi
   return "$rc"
 }
 

@@ -145,6 +145,15 @@ ssh_run() {
   mapfile -t ssh_opts < <(ssh_base_args "$SSH_KEY" "$KNOWN_HOSTS_FILE")
   local cmd
   cmd=(ssh "${ssh_opts[@]}" "${SSH_USER}@${host}" "$@")
+  # An optional wall-clock bound, set by the caller around invocations whose
+  # legitimate duration is known. A benchmark that finished its measurement but
+  # never exited held one run open for 30 minutes with instances billing; the
+  # measurement had already been written, so terminating the ssh loses nothing
+  # and the repetition is recorded as failed by the existing handling.
+  if [[ -n "${SSH_TIMEOUT_SEC:-}" ]] && [[ "${SSH_TIMEOUT_SEC}" =~ ^[0-9]+$ ]] \
+     && (( SSH_TIMEOUT_SEC > 0 )) && command -v timeout >/dev/null 2>&1; then
+    cmd=(timeout --signal=TERM --kill-after=15 "$SSH_TIMEOUT_SEC" "${cmd[@]}")
+  fi
   if [[ -n "$COMMAND_LOG" ]]; then
     append_command_log "$COMMAND_LOG" "${cmd[@]}"
   fi
@@ -454,6 +463,7 @@ run_one_iperf3_repetition() {
   wait_for_server_ready iperf3 "$IPERF3_PROTOCOL" "$IPERF3_PORT" "$SERVER_READY_TIMEOUT_SEC"
 
   set +e
+  SSH_TIMEOUT_SEC="$(step_timeout_sec "$IPERF3_RUNTIME_SEC")"
   ssh_run "$CLIENT_SSH_HOST" "$(shell_join \
     "${REMOTE_BIN_DIR}/run_iperf.sh" \
     --role client \
@@ -469,7 +479,11 @@ run_one_iperf3_repetition() {
     --out-dir "${remote_rep_dir}/client" \
     --cpu-list "$CLIENT_CPU_LIST")"
   local rc=$?
+  SSH_TIMEOUT_SEC=""
   set -e
+  if [[ "$rc" -eq 124 ]]; then
+    log "iperf3 client exceeded its time bound and was terminated; recording the repetition as failed"
+  fi
   stop_server "${remote_rep_dir}/server/server.log.pid"
   kill_stale_server iperf3 "$IPERF3_PORT"
   return "$rc"
@@ -509,9 +523,16 @@ run_one_sockperf_repetition() {
   fi
 
   set +e
+  # Bounded: sockperf has been observed to finish its measurement, write the
+  # summary, and then never exit -- holding the run open indefinitely.
+  SSH_TIMEOUT_SEC="$(step_timeout_sec "$SOCKPERF_RUNTIME_SEC")"
   ssh_run "$CLIENT_SSH_HOST" "$(shell_join "${client_args[@]}")"
   local rc=$?
+  SSH_TIMEOUT_SEC=""
   set -e
+  if [[ "$rc" -eq 124 ]]; then
+    log "sockperf client exceeded its time bound and was terminated; recording the repetition as failed"
+  fi
   stop_server "${remote_rep_dir}/server/server.log.pid"
   kill_stale_server sockperf "$SOCKPERF_PORT"
   return "$rc"

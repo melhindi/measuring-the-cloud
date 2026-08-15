@@ -314,6 +314,13 @@ LOCAL_COMMAND_LOG="${LOCAL_RUN_DIR}/commands.log"
 : >"$LOCAL_COMMAND_LOG"
 exec > >(tee -a "$LOCAL_LAUNCHER_LOG") 2>&1
 log "launcher log: ${LOCAL_LAUNCHER_LOG}"
+# Report a run that has stopped writing anything. Per-step bounds cover the
+# benchmark invocations; this covers the phases where no legitimate duration is
+# known -- provisioning, fetch, teardown -- and where killing on a timer would
+# be wrong. Started after the log exists so the first check has something to
+# stat, and stopped on exit so it cannot outlive the run.
+STALE_WATCHDOG_PID="$(start_stale_watchdog "$LOCAL_LAUNCHER_LOG")"
+trap 'stop_stale_watchdog "${STALE_WATCHDOG_PID:-}"' EXIT
 log "command log: ${LOCAL_COMMAND_LOG}"
 
 overall_rc=0
