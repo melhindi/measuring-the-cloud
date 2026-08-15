@@ -396,10 +396,17 @@ run_device_calibration() {
     fi
 
     log "device calibration probe on target ${target_name}"
+    # Bounded like the benchmark itself. The probe runs before any measurement,
+    # so a hang here holds the instances open having produced nothing at all --
+    # and it is already non-fatal, so a terminated probe costs the calibration
+    # numbers rather than the scenario.
+    SSH_TIMEOUT_SEC="$(step_timeout_sec "$CALIBRATION_RUNTIME_SEC")"
     if ! ssh_run "$BENCHMARK_HOST" "$(shell_join "${probe_cmd[@]}")"; then
-      log "device calibration probe failed on target ${target_name}; continuing"
+      SSH_TIMEOUT_SEC=""
+      log "device calibration probe failed or timed out on target ${target_name}; continuing"
       continue
     fi
+    SSH_TIMEOUT_SEC=""
 
     # Pull the two numbers worth carrying in the scenario row.
     local iops p99
