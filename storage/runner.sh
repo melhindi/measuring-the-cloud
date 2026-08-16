@@ -70,7 +70,7 @@ run_scenario() {
   scenario_file="$(abs_path "$scenario_file")"
   require_file "$scenario_file"
 
-  unset SCENARIO_NAME PROVIDER TOFU_DIR TFVARS_FILE BENCHMARK_DIR OS_TUNING BENCHMARK_MACHINE_TYPE BENCHMARK_IMAGE_ID BLOCK_VOLUME_SIZE_GIB BLOCK_VOLUME_PERFORMANCE_CLASS BLOCK_VOLUME_TYPE BLOCK_VOLUME_IOPS BLOCK_VOLUME_THROUGHPUT_MBPS LOCAL_FILESYSTEM BLOCK_FILESYSTEM BENCHMARK_ROOT_VOLUME_SIZE_GIB BENCHMARK_ROOT_VOLUME_PERFORMANCE_CLASS CPU_IDLE_PINNING USE_SPOT SKIP SKIP_REASON
+  unset SCENARIO_NAME PROVIDER TOFU_DIR TFVARS_FILE BENCHMARK_DIR OS_TUNING BENCHMARK_MACHINE_TYPE BENCHMARK_IMAGE_ID BLOCK_VOLUME_SIZE_GIB BLOCK_VOLUME_PERFORMANCE_CLASS BLOCK_VOLUME_TYPE BLOCK_VOLUME_IOPS BLOCK_VOLUME_THROUGHPUT_MBPS LOCAL_FILESYSTEM BLOCK_FILESYSTEM BENCHMARK_ROOT_VOLUME_SIZE_GIB BENCHMARK_ROOT_VOLUME_PERFORMANCE_CLASS CLIENT_REGION BENCHMARK_AVAILABILITY_ZONE CPU_IDLE_PINNING USE_SPOT SKIP SKIP_REASON
   # shellcheck disable=SC1090
   source "$scenario_file"
 
@@ -139,6 +139,8 @@ run_scenario() {
   BENCHMARK_ROOT_VOLUME_SIZE_GIB="${BENCHMARK_ROOT_VOLUME_SIZE_GIB:-30}"
   BENCHMARK_ROOT_VOLUME_PERFORMANCE_CLASS="${BENCHMARK_ROOT_VOLUME_PERFORMANCE_CLASS:-}"
 
+  assert_zone_in_region "${scenario_file}" "${CLIENT_REGION:-}" "${BENCHMARK_AVAILABILITY_ZONE:-}"
+
   TOFU_DIR="$(abs_path "$TOFU_DIR")"
   TFVARS_FILE="$(abs_path "$TFVARS_FILE")"
   BENCHMARK_DIR="$(abs_path "$BENCHMARK_DIR")"
@@ -163,6 +165,8 @@ run_scenario() {
     echo "  os_tuning=${OS_TUNING}"
     echo "  cpu_idle_pinning=${CPU_IDLE_PINNING}"
     echo "  use_spot=${USE_SPOT}"
+    [[ -n "${CLIENT_REGION:-}" ]] && echo "  client_region=${CLIENT_REGION}"
+    [[ -n "${BENCHMARK_AVAILABILITY_ZONE:-}" ]] && echo "  benchmark_availability_zone=${BENCHMARK_AVAILABILITY_ZONE}"
     echo "  benchmark_machine_type=${BENCHMARK_MACHINE_TYPE}"
     echo "  benchmark_image_id=${BENCHMARK_IMAGE_ID}"
     echo "  block_volume_size_gib=${BLOCK_VOLUME_SIZE_GIB}"
@@ -217,6 +221,25 @@ run_scenario() {
   apply_tfvar_overlay "$merged_tfvars" "benchmark_root_volume_performance_class" "\"${BENCHMARK_ROOT_VOLUME_PERFORMANCE_CLASS}\""
   if [[ "$ACCESS_MODE" == "private" ]]; then
     apply_tfvar_overlay "$merged_tfvars" "assign_public_ip" "false"
+  fi
+  # Region and availability zone, both spelled per provider so neither can be
+  # overlaid under one name. Previously the storage runner had neither: a
+  # scenario setting CLIENT_REGION was silently ignored, which is worse than
+  # rejecting it, because the run proceeds in whatever region the shared tfvars
+  # names and the artifacts claim a location the measurement did not have.
+  #
+  # They come as a pair on purpose. Changing region alone leaves the zone from
+  # the tfvars, which is not in the new region, and AWS additionally pins an
+  # AMI per region -- so a region move also needs BENCHMARK_IMAGE_ID.
+  if [[ -n "${CLIENT_REGION:-}" || -n "${BENCHMARK_AVAILABILITY_ZONE:-}" ]]; then
+    local region_var="" zone_var=""
+    case "$PROVIDER" in
+      aws) region_var="aws_region"; zone_var="aws_availability_zone" ;;
+      stackit) region_var="stackit_region"; zone_var="stackit_availability_zone" ;;
+      *) die "${SCENARIO_NAME}: CLIENT_REGION/BENCHMARK_AVAILABILITY_ZONE are not supported for provider ${PROVIDER}" ;;
+    esac
+    [[ -n "${CLIENT_REGION:-}" ]] && apply_tfvar_overlay "$merged_tfvars" "$region_var" "\"${CLIENT_REGION}\""
+    [[ -n "${BENCHMARK_AVAILABILITY_ZONE:-}" ]] && apply_tfvar_overlay "$merged_tfvars" "$zone_var" "\"${BENCHMARK_AVAILABILITY_ZONE}\""
   fi
   # Persist the overlaid values next to the run's artifacts before provisioning.
   # The merged file is a temp file removed when this function returns, and the
