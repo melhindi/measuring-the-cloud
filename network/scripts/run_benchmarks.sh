@@ -224,6 +224,34 @@ wait_for_host() {
   die "${label} SSH did not become ready: ${host}"
 }
 
+# Pull cloud-init's own logs back before the instance is destroyed.
+#
+# The wait above treats "status: error" as terminal, which is right -- it stops
+# a doomed setup from burning all 180 attempts. But the reason cloud-init failed
+# lives in /var/log/cloud-init-output.log on a machine that is about to be torn
+# down, so without this the record of the failure is the single word "error".
+#
+# Written to the local run directory rather than the remote artifact tree,
+# because the tree may not exist: a server whose cloud-init failed never got as
+# far as creating one, and fetch_results pulls the client's tree in any case, so
+# a server-side failure would be captured where nobody collects it. Best-effort
+# throughout -- a host too broken to answer must not turn a diagnosable failure
+# into a different one.
+capture_cloud_init_failure() {
+  local host="$1"
+  local label="$2"
+  [[ -n "${LOCAL_LOG_DIR:-}" ]] || return 0
+  local out="${LOCAL_LOG_DIR}/cloud-init-failure-${label}.log"
+  log "cloud-init ${label} failed; capturing its logs to ${out}"
+  ssh_run "$host" "
+    echo '=== cloud-init status --long ==='; cloud-init status --long 2>&1
+    echo; echo '=== cloud-init-output.log (last 200 lines) ==='
+    sudo tail -n 200 /var/log/cloud-init-output.log 2>&1
+    echo; echo '=== cloud-init.log, error lines (last 100) ==='
+    sudo grep -aiE 'error|failed|traceback' /var/log/cloud-init.log 2>/dev/null | tail -n 100
+  " >"$out" 2>&1 || log "could not capture cloud-init logs from ${label}; the host may be unreachable"
+}
+
 wait_for_cloud_init() {
   local host="$1"
   local label="$2"
@@ -238,7 +266,10 @@ wait_for_cloud_init() {
     fi
     sleep 2
   done
-  ssh_run "$host" "cloud-init status --wait >/tmp/cloud-init-status.log 2>&1 || (cat /tmp/cloud-init-status.log; exit 1)"
+  if ! ssh_run "$host" "cloud-init status --wait >/tmp/cloud-init-status.log 2>&1 || (cat /tmp/cloud-init-status.log; exit 1)"; then
+    capture_cloud_init_failure "$host" "$label"
+    die "cloud-init ${label} setup failed on ${host}; see cloud-init-failure-${label}.log"
+  fi
 }
 
 selected_benchmark() {
