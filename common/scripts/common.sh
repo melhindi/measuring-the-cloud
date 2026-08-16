@@ -157,6 +157,27 @@ require_dir() {
   [[ -d "$1" ]] || die "directory not found: $1"
 }
 
+# An availability zone belongs to its region, and every provider used here names
+# it with the region as a prefix: us-east-1a in us-east-1, eu01-1 in eu01,
+# us-east1-b in us-east1.
+#
+# Checking that prefix catches the mistake that quietly stranded the eu-central-1
+# AWS network scenarios: the shared tfvars moved to us-east-1 and the scenarios
+# kept their old zones, so every one of them referenced a zone that did not
+# exist in the configured region. Nothing detected it until a run failed at
+# apply, and only for whichever scenario ran first.
+#
+# Only checked when a region is explicitly set, which is the case that can
+# disagree. A scenario that takes the region from its tfvars cannot.
+assert_zone_in_region() {
+  local label="$1"
+  local region="$2"
+  local zone="$3"
+  [[ -n "$region" && -n "$zone" ]] || return 0
+  [[ "$zone" == "$region"* ]] \
+    || die "${label}: availability zone '${zone}' is not in region '${region}'"
+}
+
 tofu_bin() {
   if command -v tofu >/dev/null 2>&1; then
     echo tofu

@@ -168,6 +168,9 @@ run_scenario() {
     [[ -n "$CLIENT_MACHINE_TYPE" && -n "$SERVER_MACHINE_TYPE" && -n "$CLIENT_AVAILABILITY_ZONE" && -n "$SERVER_AVAILABILITY_ZONE" ]] || die "${scenario_file}: client/server machine types and availability zones must be set together"
   fi
 
+  assert_zone_in_region "${scenario_file} (client)" "${CLIENT_REGION:-}" "${CLIENT_AVAILABILITY_ZONE:-}"
+  assert_zone_in_region "${scenario_file} (server)" "${SERVER_REGION:-}" "${SERVER_AVAILABILITY_ZONE:-}"
+
   TOFU_DIR="$(abs_path "$TOFU_DIR")"
   TFVARS_FILE="$(abs_path "$TFVARS_FILE")"
   BENCHMARK_DIR="$(abs_path "$BENCHMARK_DIR")"
