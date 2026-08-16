@@ -1,0 +1,411 @@
+[
+  {
+    "description": "Preview Rows (latency)",
+    "sql_code": [
+      "SELECT *",
+      "FROM network_latency",
+      "LIMIT 100"
+    ],
+    "r_code": "",
+    "group": "Schema"
+  },
+  {
+    "description": "Preview Rows (capacity)",
+    "sql_code": [
+      "SELECT *",
+      "FROM network_capacity",
+      "LIMIT 100"
+    ],
+    "r_code": "",
+    "group": "Schema"
+  },
+  {
+    "description": "What was measured",
+    "sql_code": [
+      "SELECT provider,",
+      "       placement_class,",
+      "       os_tuning,",
+      "       count(DISTINCT benchmark_name)                    AS arms,",
+      "       count(*)                                          AS latency_rows,",
+      "       round(min(p50_rtt_us) / 1000.0, 3)                AS best_p50_ms,",
+      "       round(max(p99_rtt_us) / 1000.0, 1)                AS worst_p99_ms",
+      "FROM network_latency",
+      "GROUP BY 1, 2, 3",
+      "ORDER BY 1, 2, 3"
+    ],
+    "r_code": "",
+    "group": "Schema"
+  },
+  {
+    "description": "UDP tail advantage by placement and offered rate",
+    "sql_code": [
+      "-- The headline. Positive advantage means UDP's 99th percentile is lower.",
+      "-- TCP and UDP move a packet identically; the difference appears only where",
+      "-- TCP's control loop engages, and how hard it engages scales with RTT.",
+      "--",
+      "-- Grouped by provider on purpose. Pooling them mixes STACKIT's packet-rate",
+      "-- ceiling -- which caps UDP at ~60k packets/s and is a property of its NIC, not",
+      "-- of the transport -- into the same row as providers that have no such limit,",
+      "-- and the average then says nothing true about either.",
+      "SELECT provider,",
+      "       placement_class,",
+      "       offered_mps,",
+      "       round(median(CASE WHEN protocol = 'tcp' THEN p99_rtt_us END) / 1000.0, 2) AS tcp_p99_ms,",
+      "       round(median(CASE WHEN protocol = 'udp' THEN p99_rtt_us END) / 1000.0, 2) AS udp_p99_ms,",
+      "       round(median(CASE WHEN protocol = 'tcp' THEN p99_rtt_us END)",
+      "             / nullif(median(CASE WHEN protocol = 'udp' THEN p99_rtt_us END), 0), 1) AS udp_advantage_x",
+      "FROM network_latency",
+      "WHERE mode = 'ul'",
+      "GROUP BY 1, 2, 3",
+      "ORDER BY 1, 2, 3"
+    ],
+    "r_code": [
+      "to_svg <- svgstring(width = output.width.inch, height = output.height.inch, scaling = 1)",
+      "",
+      "### the current table is bound to the variable 'df'",
+      "output <- ggplot(df, aes(x = factor(offered_mps), y = udp_advantage_x, fill = placement_class)) +",
+      "  geom_col(position = \"dodge\") +",
+      "  geom_hline(yintercept = 1, linetype = \"dashed\") +",
+      "  facet_wrap(~ provider) +",
+      "  labs(x = \"Offered rate (messages/s)\",",
+      "       y = \"TCP p99 / UDP p99  (>1 means UDP is better)\",",
+      "       fill = \"Placement\") +",
+      "  theme_bw() +",
+      "  theme(axis.text.x = element_text(angle = 45, hjust = 1))",
+      "",
+      "plot(output); dev.off(); to_svg() # output to the html page"
+    ],
+    "group": "TCP vs UDP"
+  },
+  {
+    "description": "Cross-region tail latency by protocol",
+    "sql_code": [
+      "-- Where the effect is largest: a retransmit costs at least one round trip, and",
+      "-- cross-region that is ~55-90 ms landing straight in the tail. UDP never",
+      "-- retransmits, so its p99 stays pinned near the propagation RTT.",
+      "SELECT provider,",
+      "       offered_mps,",
+      "       protocol,",
+      "       round(median(p50_rtt_us) / 1000.0, 1) AS p50_ms,",
+      "       round(median(p99_rtt_us) / 1000.0, 1) AS p99_ms",
+      "FROM network_latency",
+      "WHERE mode = 'ul'",
+      "  AND placement_class = 'cross-region'",
+      "GROUP BY 1, 2, 3",
+      "ORDER BY 1, 2, 3"
+    ],
+    "r_code": [
+      "to_svg <- svgstring(width = output.width.inch, height = output.height.inch, scaling = 1)",
+      "",
+      "### the current table is bound to the variable 'df'",
+      "output <- ggplot(df, aes(x = offered_mps, y = p99_ms, colour = protocol)) +",
+      "  geom_line(linewidth = 0.9) + geom_point(size = 1.8) +",
+      "  facet_wrap(~ provider) +",
+      "  scale_x_continuous(labels = scales::comma) +",
+      "  labs(x = \"Offered rate (messages/s)\", y = \"p99 RTT (ms)\", colour = \"Protocol\") +",
+      "  theme_bw()",
+      "",
+      "plot(output); dev.off(); to_svg() # output to the html page"
+    ],
+    "group": "TCP vs UDP"
+  },
+  {
+    "description": "Is UDP's advantage bought with loss?",
+    "sql_code": [
+      "-- A flat UDP tail is only meaningful if the messages actually arrived. Percentiles",
+      "-- are computed over survivors, so a lossy arm reports the latency of whatever got",
+      "-- through -- and the lost ones are disproportionately the slow ones.",
+      "SELECT provider,",
+      "       placement_class,",
+      "       offered_mps,",
+      "       round(median(delivered_pct), 3)                  AS udp_delivered_pct,",
+      "       round(median(p99_rtt_us) / 1000.0, 2)            AS udp_p99_ms",
+      "FROM network_latency",
+      "WHERE mode = 'ul'",
+      "  AND protocol = 'udp'",
+      "GROUP BY 1, 2, 3",
+      "ORDER BY 1, 2, 3"
+    ],
+    "r_code": [
+      "to_svg <- svgstring(width = output.width.inch, height = output.height.inch, scaling = 1)",
+      "",
+      "### the current table is bound to the variable 'df'",
+      "output <- ggplot(df, aes(x = factor(offered_mps), y = udp_delivered_pct, fill = provider)) +",
+      "  geom_col(position = \"dodge\") +",
+      "  facet_wrap(~ placement_class) +",
+      "  coord_cartesian(ylim = c(0, 105)) +",
+      "  labs(x = \"Offered rate (messages/s)\", y = \"UDP delivered (% of sent)\", fill = \"Provider\") +",
+      "  theme_bw()",
+      "",
+      "plot(output); dev.off(); to_svg() # output to the html page"
+    ],
+    "group": "TCP vs UDP"
+  },
+  {
+    "description": "Latency against offered rate",
+    "sql_code": [
+      "-- The ladder. Ping-pong (one message in flight) cannot show this: at that",
+      "-- operating point the two transports move the same packet and differ by noise.",
+      "SELECT provider,",
+      "       placement_class,",
+      "       protocol,",
+      "       offered_mps,",
+      "       round(median(p50_rtt_us), 1)  AS p50_us,",
+      "       round(median(p99_rtt_us), 1)  AS p99_us,",
+      "       round(median(p999_rtt_us), 1) AS p999_us",
+      "FROM network_latency",
+      "WHERE mode = 'ul'",
+      "GROUP BY 1, 2, 3, 4",
+      "ORDER BY 1, 2, 3, 4"
+    ],
+    "r_code": [
+      "to_svg <- svgstring(width = output.width.inch, height = output.height.inch, scaling = 1)",
+      "",
+      "### the current table is bound to the variable 'df'",
+      "output <- ggplot(df, aes(x = offered_mps, y = p99_us, colour = protocol)) +",
+      "  geom_line(linewidth = 0.9) + geom_point(size = 1.6) +",
+      "  facet_grid(provider ~ placement_class, scales = \"free_y\") +",
+      "  scale_x_continuous(labels = scales::comma) +",
+      "  scale_y_log10(labels = scales::comma) +",
+      "  labs(x = \"Offered rate (messages/s)\", y = \"p99 RTT (us, log scale)\", colour = \"Protocol\") +",
+      "  theme_bw()",
+      "",
+      "plot(output); dev.off(); to_svg() # output to the html page"
+    ],
+    "group": "Latency vs Offered Rate"
+  },
+  {
+    "description": "Coordinated omission: ping-pong vs under-load",
+    "sql_code": [
+      "-- Ping-pong is closed-loop: it sends, waits for the reply, then sends again. When",
+      "-- the system stalls it simply issues fewer requests, so it stops sampling exactly",
+      "-- when it should be measuring. Under-load keeps to a schedule regardless, so the",
+      "-- stalls land in the histogram. A lower ping-pong tail is not a better result.",
+      "SELECT provider,",
+      "       placement_class,",
+      "       protocol,",
+      "       round(median(CASE WHEN mode = 'pp' THEN p50_rtt_us END), 1)                        AS pingpong_p50_us,",
+      "       round(median(CASE WHEN mode = 'ul' AND offered_mps = 1000 THEN p50_rtt_us END), 1) AS underload_1k_p50_us,",
+      "       round(median(CASE WHEN mode = 'pp' THEN p99_rtt_us END), 1)                        AS pingpong_p99_us,",
+      "       round(median(CASE WHEN mode = 'ul' AND offered_mps = 1000 THEN p99_rtt_us END), 1) AS underload_1k_p99_us",
+      "FROM network_latency",
+      "GROUP BY 1, 2, 3",
+      "ORDER BY 1, 2, 3"
+    ],
+    "r_code": "",
+    "group": "Latency vs Offered Rate"
+  },
+  {
+    "description": "Latency by placement",
+    "sql_code": [
+      "-- Three orders of magnitude between intra-zone and cross-region. Everything the",
+      "-- protocol comparison says has to be read inside a placement, not across one.",
+      "SELECT provider,",
+      "       placement_class,",
+      "       protocol,",
+      "       round(median(p50_rtt_us), 1) AS p50_us,",
+      "       round(median(p99_rtt_us), 1) AS p99_us",
+      "FROM network_latency",
+      "WHERE mode = 'pp'",
+      "GROUP BY 1, 2, 3",
+      "ORDER BY 1, 2, 3"
+    ],
+    "r_code": [
+      "to_svg <- svgstring(width = output.width.inch, height = output.height.inch, scaling = 1)",
+      "",
+      "### the current table is bound to the variable 'df'",
+      "output <- ggplot(df, aes(x = placement_class, y = p50_us, fill = protocol)) +",
+      "  geom_col(position = \"dodge\") +",
+      "  facet_wrap(~ provider) +",
+      "  scale_y_log10(labels = scales::comma) +",
+      "  labs(x = \"Placement\", y = \"Ping-pong p50 RTT (us, log scale)\", fill = \"Protocol\") +",
+      "  theme_bw() +",
+      "  theme(axis.text.x = element_text(angle = 30, hjust = 1))",
+      "",
+      "plot(output); dev.off(); to_svg() # output to the html page"
+    ],
+    "group": "Placement"
+  },
+  {
+    "description": "Intra-AZ latency across providers",
+    "sql_code": [
+      "-- Same instance size (2 vCPU), same placement policy (different-host), same",
+      "-- tuning. What differs is the provider's NIC and host path.",
+      "SELECT provider,",
+      "       protocol,",
+      "       offered_mps,",
+      "       round(median(p50_rtt_us), 1) AS p50_us,",
+      "       round(median(p99_rtt_us), 1) AS p99_us",
+      "FROM network_latency",
+      "WHERE mode = 'ul'",
+      "  AND placement_class = 'different-host-single-az'",
+      "  AND os_tuning = 'standard'",
+      "GROUP BY 1, 2, 3",
+      "ORDER BY 3, 1, 2"
+    ],
+    "r_code": [
+      "to_svg <- svgstring(width = output.width.inch, height = output.height.inch, scaling = 1)",
+      "",
+      "### the current table is bound to the variable 'df'",
+      "output <- ggplot(df, aes(x = offered_mps, y = p50_us, colour = provider)) +",
+      "  geom_line(linewidth = 0.9) + geom_point(size = 1.6) +",
+      "  facet_wrap(~ protocol) +",
+      "  scale_x_continuous(labels = scales::comma) +",
+      "  scale_y_log10(labels = scales::comma) +",
+      "  labs(x = \"Offered rate (messages/s)\", y = \"p50 RTT (us, log scale)\", colour = \"Provider\") +",
+      "  theme_bw()",
+      "",
+      "plot(output); dev.off(); to_svg() # output to the html page"
+    ],
+    "group": "Provider Comparison"
+  },
+  {
+    "description": "Effect of the network-throughput tuning profile",
+    "sql_code": [
+      "-- Only STACKIT was run with both profiles. The profile changes three things at",
+      "-- once (congestion control, qdisc, socket buffers), so a difference here cannot",
+      "-- be attributed to any one of them.",
+      "SELECT os_tuning,",
+      "       protocol,",
+      "       offered_mps,",
+      "       round(median(p50_rtt_us), 1) AS p50_us,",
+      "       round(median(p99_rtt_us), 1) AS p99_us,",
+      "       any_value(tuning_congestion_control) AS congestion_control,",
+      "       any_value(tuning_rmem_max)           AS rmem_max",
+      "FROM network_latency",
+      "WHERE mode = 'ul'",
+      "  AND provider = 'stackit'",
+      "  AND placement_class = 'different-host-single-az'",
+      "GROUP BY 1, 2, 3",
+      "ORDER BY 3, 1, 2"
+    ],
+    "r_code": "",
+    "group": "Provider Comparison"
+  },
+  {
+    "description": "Packet-rate ceiling by provider",
+    "sql_code": [
+      "-- Why STACKIT has a latency cliff and the others do not. Asking for 5x the",
+      "-- bitrate delivers the same packet rate on STACKIT: a hard ceiling around 60k",
+      "-- packets/s. AWS and GCP instead go faster when pushed harder, which is NAPI",
+      "-- staying in polling mode rather than paying an interrupt per packet.",
+      "SELECT provider,",
+      "       placement_class,",
+      "       benchmark_name,",
+      "       udp_target_bitrate_gbit_per_sec           AS target_gbit_s,",
+      "       round(median(receiver_mbit_per_sec))      AS delivered_mbit_s,",
+      "       round(median(approx_packets_per_sec))     AS packets_per_sec,",
+      "       round(median(lost_percent), 2)            AS loss_pct",
+      "FROM network_capacity",
+      "WHERE protocol = 'udp'",
+      "GROUP BY 1, 2, 3, 4",
+      "ORDER BY 1, 2, 4"
+    ],
+    "r_code": [
+      "to_svg <- svgstring(width = output.width.inch, height = output.height.inch, scaling = 1)",
+      "",
+      "### the current table is bound to the variable 'df'",
+      "output <- ggplot(df, aes(x = factor(target_gbit_s), y = packets_per_sec, fill = provider)) +",
+      "  geom_col(position = \"dodge\") +",
+      "  facet_wrap(~ placement_class) +",
+      "  scale_y_continuous(labels = scales::comma) +",
+      "  labs(x = \"Offered bitrate (Gbit/s)\", y = \"Delivered packets/s\", fill = \"Provider\") +",
+      "  theme_bw()",
+      "",
+      "plot(output); dev.off(); to_svg() # output to the html page"
+    ],
+    "group": "Capacity"
+  },
+  {
+    "description": "Was the ladder ever bandwidth limited?",
+    "sql_code": [
+      "-- No: the ladder peaks around 100 Mbit/s while the same pair carries 8-10 Gbit/s",
+      "-- over TCP. Every ceiling this study found was packet-rate or endpoint bound.",
+      "-- Without this arm that claim would be an inference rather than a measurement.",
+      "WITH ladder AS (",
+      "  SELECT provider, placement_class,",
+      "         round(max(delivered_mps) * 64 * 2 * 8 / 1e6, 1) AS ladder_peak_mbit_s,",
+      "         round(max(packets_per_sec))                     AS ladder_peak_pps",
+      "  FROM network_latency",
+      "  WHERE mode = 'ul'",
+      "  GROUP BY 1, 2",
+      "),",
+      "capacity AS (",
+      "  SELECT provider, placement_class,",
+      "         round(median(receiver_mbit_per_sec)) AS tcp_capacity_mbit_s",
+      "  FROM network_capacity",
+      "  WHERE protocol = 'tcp'",
+      "  GROUP BY 1, 2",
+      ")",
+      "SELECT l.provider, l.placement_class,",
+      "       l.ladder_peak_mbit_s, l.ladder_peak_pps, c.tcp_capacity_mbit_s,",
+      "       round(100.0 * l.ladder_peak_mbit_s / nullif(c.tcp_capacity_mbit_s, 0), 2) AS ladder_pct_of_capacity",
+      "FROM ladder l",
+      "JOIN capacity c USING (provider, placement_class)",
+      "ORDER BY 1, 2"
+    ],
+    "r_code": "",
+    "group": "Capacity"
+  },
+  {
+    "description": "Do burst credits decay during a capacity run?",
+    "sql_code": [
+      "-- AWS c6id.large is a burst-credited instance (\"Up to 12.5 Gbps\"), so a capacity",
+      "-- figure could be peak-then-baseline rather than sustained. Credit depletion",
+      "-- shows as a downward slope across the run; a flat trace means the number is a",
+      "-- cap being saturated, at least at this duration.",
+      "SELECT provider,",
+      "       round(interval_start_sec)            AS second,",
+      "       round(median(mbit_per_sec))          AS mbit_s",
+      "FROM network_capacity_intervals",
+      "WHERE protocol = 'tcp'",
+      "GROUP BY 1, 2",
+      "ORDER BY 1, 2"
+    ],
+    "r_code": [
+      "to_svg <- svgstring(width = output.width.inch, height = output.height.inch, scaling = 1)",
+      "",
+      "### the current table is bound to the variable 'df'",
+      "output <- ggplot(df, aes(x = second, y = mbit_s, colour = provider)) +",
+      "  geom_line(linewidth = 0.9) +",
+      "  scale_y_continuous(labels = scales::comma) +",
+      "  labs(x = \"Second within the 15s run\", y = \"Throughput (Mbit/s)\", colour = \"Provider\") +",
+      "  theme_bw()",
+      "",
+      "plot(output); dev.off(); to_svg() # output to the html page"
+    ],
+    "group": "Capacity"
+  },
+  {
+    "description": "Repetitions that produced no measurement",
+    "sql_code": [
+      "-- Rows that parsed are not the same as measurements that happened. A benchmark",
+      "-- can look complete while having lost repetitions.",
+      "SELECT run_id, scenario_name, benchmark_name, count(*) AS failed_repetitions",
+      "FROM network_failures",
+      "GROUP BY 1, 2, 3",
+      "ORDER BY 4 DESC, 1, 2, 3"
+    ],
+    "r_code": "",
+    "group": "Data Quality"
+  },
+  {
+    "description": "Sent versus delivered rate",
+    "sql_code": [
+      "-- The distinction that decides the protocol comparison. UDP does not slow down",
+      "-- when overloaded, it discards -- so it reports a healthy sent rate while",
+      "-- carrying less traffic end to end than the TCP arm it is compared against.",
+      "SELECT provider, placement_class, protocol, offered_mps,",
+      "       round(median(achieved_mps))     AS sent_mps,",
+      "       round(median(delivered_mps))    AS delivered_mps,",
+      "       round(median(delivered_pct), 3) AS delivered_pct",
+      "FROM network_latency",
+      "WHERE mode = 'ul'",
+      "GROUP BY 1, 2, 3, 4",
+      "HAVING round(median(delivered_pct), 3) < 100",
+      "ORDER BY 7, 1, 2"
+    ],
+    "r_code": "",
+    "group": "Data Quality"
+  }
+]

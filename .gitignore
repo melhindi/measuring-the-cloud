@@ -14,6 +14,10 @@ analysis/**/run-*/
 analysis/**/*.html
 
 *.csv
+# Derived like the CSVs above: build_duckdb.R regenerates it from them, and at
+# a couple of megabytes it would bloat history for something reproducible in
+# seconds. Copy the generated file to wherever it is published.
+*.duckdb
 *.png
 
 # Created by https://www.toptal.com/developers/gitignore/api/git,vim,emacs,linux,macos,direnv,windows,intellij,visualstudiocode,terraform
