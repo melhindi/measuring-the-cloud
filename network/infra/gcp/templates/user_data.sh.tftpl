@@ -1,8 +1,33 @@
 #!/usr/bin/env bash
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -y
-apt-get install -y fio iperf3 sockperf jq rsync sysstat iproute2 ethtool util-linux
+
+# Force apt over IPv4, and retry.
+#
+# The mirrors resolve to both A and AAAA records, but these instances get no
+# global IPv6 route -- only fe80::/64 link-local. apt picks the AAAA address,
+# fails with "Network is unreachable", and does not fall back, so every index
+# fetch fails and the benchmark tools are silently absent. The script then exits
+# non-zero and cloud-init reports the whole thing as "status: error", which is
+# what a cross-region server did twice before its logs were captured.
+#
+# Retries cover the ordinary case of a mirror being briefly unavailable, which
+# is otherwise fatal here: a missing fio or sockperf is not detected until the
+# first benchmark tries to run.
+printf 'Acquire::ForceIPv4 "true";\n' >/etc/apt/apt.conf.d/99force-ipv4
+
+apt_retry() {
+  local attempt
+  for attempt in 1 2 3 4 5; do
+    if "$@"; then return 0; fi
+    echo "apt attempt $attempt failed: $*" >&2
+    sleep 10
+  done
+  return 1
+}
+
+apt_retry apt-get update -y
+apt_retry apt-get install -y fio iperf3 sockperf jq rsync sysstat iproute2 ethtool util-linux
 mkdir -p /opt/cloud-measuring/{results,bin}
 chown -R ubuntu:ubuntu /opt/cloud-measuring
 systemctl disable --now iperf3 || true

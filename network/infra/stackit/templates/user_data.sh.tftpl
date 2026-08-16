@@ -6,9 +6,25 @@ log() {
 }
 
 export DEBIAN_FRONTEND=noninteractive
+
+# See the AWS template for why: mirrors resolve to AAAA records these instances
+# cannot route, and a failed index fetch leaves the benchmark tools silently
+# absent rather than failing loudly.
+printf 'Acquire::ForceIPv4 "true";\n' >/etc/apt/apt.conf.d/99force-ipv4
+
+apt_retry() {
+  local attempt
+  for attempt in 1 2 3 4 5; do
+    if "$@"; then return 0; fi
+    echo "apt attempt $attempt failed: $*" >&2
+    sleep 10
+  done
+  return 1
+}
+
 if [[ "${node_role}" == "runner" ]]; then
-  apt-get update -y
-  apt-get install -y openssh-client rsync jq util-linux iproute2 curl ca-certificates gnupg apt-transport-https
+  apt_retry apt-get update -y
+  apt_retry apt-get install -y openssh-client rsync jq util-linux iproute2 curl ca-certificates gnupg apt-transport-https
 
   curl --proto '=https' --tlsv1.2 -fsSL https://get.opentofu.org/install-opentofu.sh -o /tmp/install-opentofu.sh
   chmod +x /tmp/install-opentofu.sh
@@ -27,8 +43,8 @@ EOF
   exit 0
 fi
 
-apt-get update -y
-apt-get install -y fio iperf3 sockperf jq rsync sysstat iproute2 ethtool util-linux
+apt_retry apt-get update -y
+apt_retry apt-get install -y fio iperf3 sockperf jq rsync sysstat iproute2 ethtool util-linux
 
 mkdir -p /opt/cloud-measuring/results /opt/cloud-measuring/bin
 chown -R ubuntu:ubuntu /opt/cloud-measuring
