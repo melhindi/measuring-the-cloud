@@ -1,5 +1,14 @@
 #!/usr/bin/env bash
-# Cross-region: us-east4-c to us-west1-a.
+# Cross-region: us-east1-b to us-west1-a.
+#
+# Sourced from us-east1 like the intra- and inter-zone arms. It previously
+# started in us-east4-c, because us-east4 was chosen to metro-match AWS
+# us-east-1 (Ashburn) and only its -c zone had capacity for n2-standard-2.
+# That left GCP's own placement axis spanning two source regions, so
+# intra -> inter -> cross-region mixed a placement change with a region
+# change. Moncks Corner to Oregon is ~3,800 km against Ashburn to Oregon's
+# ~3,900 km, so the ~2% of distance given up is far below the effects being
+# measured and buys an internally consistent axis.
 #
 # Deliberately the same physical corridor as the AWS cross-region scenario.
 # us-east4 is Ashburn, Northern Virginia and us-west1 is The Dalles, Oregon --
@@ -13,13 +22,13 @@
 # the two would have attributed a distance difference to the provider.
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/common.inc"
 
-SCENARIO_NAME=gcp_n2-standard-2_us-east4-c_us-west1-a_none_standard_ladder
+SCENARIO_NAME=gcp_n2-standard-2_us-east1-b_us-west1-a_none_standard_ladder
 OS_TUNING=standard
 INSTANCE_AFFINITY=none
 CLIENT_MACHINE_TYPE=n2-standard-2
 SERVER_MACHINE_TYPE=n2-standard-2
-CLIENT_REGION=us-east4
-CLIENT_AVAILABILITY_ZONE=us-east4-c
+CLIENT_REGION=us-east1
+CLIENT_AVAILABILITY_ZONE=us-east1-b
 SERVER_AVAILABILITY_ZONE=us-west1-a
 SERVER_REGION=us-west1
 PLACEMENT_MODE=cross-region
