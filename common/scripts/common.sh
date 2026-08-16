@@ -291,10 +291,35 @@ tofu_output_raw() {
   "$tofu" -chdir="$tofu_dir" output -raw "$name"
 }
 
+# Connection options every ssh and scp in the framework inherits.
+#
+# ConnectTimeout and the keepalives exist because a benchmark host can vanish
+# mid-run -- a reclaimed spot instance is the obvious way, but any instance
+# failure looks the same. Without them ssh has no deadline of its own and
+# inherits the kernel's, which is minutes per attempt.
+#
+# That interacts badly with the retry loops here. wait_for_server_ready and the
+# cloud-init wait are written as "N attempts, sleep 2 between", which bounds
+# them at a couple of minutes when each attempt returns promptly. Against a host
+# that is simply gone, each attempt instead blocks for the TCP timeout and 180
+# attempts becomes hours. One reclaimed pair burned 29 minutes on a single arm
+# this way before the run gave up.
+#
+#   ConnectTimeout       - the host is unreachable when we try to connect
+#   ServerAlive*         - the host vanishes while a command is already running,
+#                          which ConnectTimeout cannot see because the
+#                          connection was established before it died
+#
+# Neither replaces the per-step bound in run_benchmarks.sh: that covers the
+# third case, where the host is healthy and the benchmark process itself hangs.
+# Three failure modes, three mechanisms, no overlap.
 ssh_base_args() {
   local key="$1"
   local known_hosts="${2:-}"
-  printf '%s\n' -i "$key" -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR
+  printf '%s\n' -i "$key" -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR \
+    -o ConnectTimeout="${SSH_CONNECT_TIMEOUT_SEC:-15}" \
+    -o ServerAliveInterval="${SSH_KEEPALIVE_INTERVAL_SEC:-15}" \
+    -o ServerAliveCountMax="${SSH_KEEPALIVE_COUNT_MAX:-4}"
   if [[ -n "$known_hosts" ]]; then
     printf '%s\n' -o UserKnownHostsFile="$known_hosts"
   fi
