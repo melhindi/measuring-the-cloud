@@ -206,22 +206,33 @@ scp_to() {
   "${cmd[@]}"
 }
 
+# Bounded by wall-clock, not by an attempt count.
+#
+# "90 attempts, sleep 2" reads like three minutes, and is -- but only while each
+# attempt returns promptly. Against a host that has gone away every attempt pays
+# the connection timeout instead, so the loop silently becomes 90 times that:
+# hours before ssh had any deadline of its own, still ~25 minutes at a 15s
+# ConnectTimeout. A deadline means what it says regardless of how long an
+# individual probe takes.
 wait_for_host() {
   local host="$1"
   local label="$2"
-  local attempt
+  local timeout="${HOST_READY_TIMEOUT_SEC:-300}"
+  local deadline=$(( SECONDS + timeout ))
+  local last_log=$SECONDS
   log "waiting for ${label} SSH to be ready"
-  for attempt in $(seq 1 90); do
+  while (( SECONDS < deadline )); do
     if ssh_run "$host" "true" >/dev/null 2>&1; then
       log "${label} SSH is ready"
       return 0
     fi
-    if (( attempt % 10 == 0 )); then
-      log "still waiting for ${label} SSH to be ready (${attempt}/90 attempts)"
+    if (( SECONDS - last_log >= 30 )); then
+      log "still waiting for ${label} SSH (${timeout}s budget, $(( deadline - SECONDS ))s left)"
+      last_log=$SECONDS
     fi
     sleep 2
   done
-  die "${label} SSH did not become ready: ${host}"
+  die "${label} SSH did not become ready within ${timeout}s: $host"
 }
 
 # Pull cloud-init's own logs back before the instance is destroyed.
@@ -255,21 +266,29 @@ capture_cloud_init_failure() {
 wait_for_cloud_init() {
   local host="$1"
   local label="$2"
-  local attempt
+  local timeout="${CLOUD_INIT_TIMEOUT_SEC:-900}"
+  local deadline=$(( SECONDS + timeout ))
+  local last_log=$SECONDS
   log "waiting for cloud-init ${label} setup to finish"
-  for attempt in $(seq 1 180); do
+  while (( SECONDS < deadline )); do
     if ssh_run "$host" "cloud-init status 2>/dev/null | grep -Eq 'status: done|status: error'"; then
-      break
+      # Terminal, but possibly failure: confirm and surface it.
+      if ! ssh_run "$host" "cloud-init status --wait >/tmp/cloud-init-status.log 2>&1 || (cat /tmp/cloud-init-status.log; exit 1)"; then
+        capture_cloud_init_failure "$host" "${label}"
+        die "cloud-init ${label} setup failed; see cloud-init-failure-${label}.log"
+      fi
+      return 0
     fi
-    if (( attempt % 10 == 0 )); then
-      log "still waiting for cloud-init ${label} setup to finish (${attempt}/180 attempts)"
+    if (( SECONDS - last_log >= 30 )); then
+      log "still waiting for cloud-init ${label} (${timeout}s budget, $(( deadline - SECONDS ))s left)"
+      last_log=$SECONDS
     fi
     sleep 2
   done
-  if ! ssh_run "$host" "cloud-init status --wait >/tmp/cloud-init-status.log 2>&1 || (cat /tmp/cloud-init-status.log; exit 1)"; then
-    capture_cloud_init_failure "$host" "$label"
-    die "cloud-init ${label} setup failed on ${host}; see cloud-init-failure-${label}.log"
-  fi
+  # Never reached a terminal state. The host may be alive but wedged, which is
+  # exactly when its logs are worth having.
+  capture_cloud_init_failure "$host" "${label}"
+  die "cloud-init ${label} did not finish within ${timeout}s; see cloud-init-failure-${label}.log"
 }
 
 selected_benchmark() {
