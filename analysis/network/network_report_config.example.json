@@ -2,7 +2,7 @@
   "placement_comparison_small_machine": "g2a.2d",
   "placement_comparison_large_machine": "g2a.120d",
   "reference_tcp_length_bytes": 131072,
-  "reference_udp_length_bytes": 1492,
+  "reference_udp_length_bytes": 1472,
   "reference_udp_target_gbps": 90,
   "reference_sockperf_msg_size_bytes": 64,
   "reference_os_tuning": "standard",

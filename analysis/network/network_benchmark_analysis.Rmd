@@ -157,7 +157,12 @@ default_report_config <- list(
   placement_comparison_large_machine = "g2a.120d",
   # Fixed points that keep like compared with like.
   reference_tcp_length_bytes = 131072,
-  reference_udp_length_bytes = 1492,
+  # 1472, matching the capacity arms: 1472 + 8 UDP + 20 IP is exactly 1500, the
+  # largest datagram that crosses a standard MTU unfragmented. The older full
+  # suite used 1492, which fragments on any 1500 B path. Historical result sets
+  # therefore need --config with 1492; the mismatch guard below names the
+  # lengths actually present rather than rendering an empty table in silence.
+  reference_udp_length_bytes = 1472,
   reference_udp_target_gbps = 90,
   reference_sockperf_msg_size_bytes = 64,
   reference_os_tuning = "standard",
