@@ -106,6 +106,53 @@ capture is still large, so a single provisioning is unreliable even after
 filtering. Repeating the STACKIT arms across several provisionings is the only
 way to get a baseline worth comparing against AWS and GCP.
 
+## A second treatment that was never applied: the socket buffer
+
+Tested after the above, and it invalidates a further conclusion.
+
+The study recorded that UDP loss on STACKIT is not a buffer artifact, because
+the `network-throughput` profile raises `net.core.rmem_max` 630x (212992 ->
+134217728) and the loss did not go away. **That tested nothing.** `rmem_max` is
+a ceiling on what an application may *request*; UDP has no receive autotuning
+the way TCP does, so the socket takes `net.core.rmem_default`, which the profile
+never sets. Read out of `ss` skmem: `rb` was **212992 in all 105 repetitions**
+of stackit-ladder-05, in every arm, tuned and untuned alike.
+
+The same telemetry shows the buffer was the binding constraint on loss. Server
+side, UDP, by rung:
+
+    rung          queue_fill_ratio   socket drops
+    ping-pong               0.006              0
+    1k msg/s                0.003              0
+    5k msg/s                0.005              0
+    10k msg/s               0.141             64
+    25k msg/s               0.385          1,301
+    50k msg/s               0.705         72,947
+    100k msg/s              0.987        598,780
+
+Drops appear exactly where the queue starts filling and explode as it approaches
+full. `nstat` agrees: loss is entirely `UdpRcvbufErrors` with `IpInDiscards` at
+zero, so the packets arrived, climbed the stack, and were discarded because the
+application could not be scheduled to read them.
+
+So contention and buffer size are not competing explanations. **Steal creates the
+stalls; the buffer's size decides how much traffic survives one.** Neither was
+ever varied. At 212992 bytes and roughly 768 bytes of skb overhead per 64 B
+datagram, the buffer held about 2.8 ms of traffic at 100k msg/s -- less than a
+single hypervisor scheduling quantum.
+
+`SOCKPERF_BUFFER_SIZE` now exists to test it, via sockperf `--buffer-size`
+(SO_RCVBUF/SO_SNDBUF) on both roles. Note the kernel arithmetic: the effective
+buffer is `2 * min(request, rmem_max)`, so a request above the ceiling is
+silently clamped -- verified locally, where 8 MB against a 4 MB ceiling yielded
+rb 8388608 rather than 16777216. The runner therefore raises `rmem_max` to at
+least the request alongside it, which confounds nothing precisely because
+`rmem_max` has no effect on its own. Confirm the treatment took from `rb_bytes`
+in `network_socket.csv`, never from the requested value.
+
+`stackit_g2a.2d_eu01-1_different-host_standard_bigbuf_ladder` requests 8388608,
+giving an effective 16777216 -- about 79x, or ~218 ms of traffic at 100k msg/s.
+
 ## Open decisions
 
 1. Whether to apply `max_steal_pct` as a filter to the report's existing
@@ -116,23 +163,23 @@ way to get a baseline worth comparing against AWS and GCP.
    `network_benchmarks.json`. Interacts with (1).
 3. Whether to repeat the STACKIT arms across provisionings (more spend).
 
-## Not verified
+## Verified
 
-`build_duckdb.R`, `validate_csv.R` and the report render have never been
-executed. The R `duckdb` package is only in the `.#analysis` nix shell and wants
-a source build. Column references were checked against the real CSVs and the R
-parses, but that is weaker than having run. The Rmd chunks added for the
-contention section are the least-tested code here.
+Everything below ran in `nix develop .#analysis` on 2026-08-17, once the shell
+was available:
 
-To close this out:
+- `build_duckdb.R` — 7 tables
+- `validate_csv.R` — Validation OK
+- all 19 queries in `network_benchmarks.json` — 19 ok, 0 failed
+- the report render — 86/86 chunks, contention section renders with real tables
+- `run_sockperf.sh --buffer-size` end to end against a live sockperf, 212992 ->
+  8388608 on the socket, flag recorded in `client.cmd`, summary and percentiles
+  still parseable
 
-    nix develop .#analysis
-    Rscript analysis/network/build_csv.R stackit-ladder-05
-    Rscript analysis/network/build_cpu_csv.R stackit-ladder-05
-    Rscript analysis/network/build_softnet_csv.R stackit-ladder-05
-    Rscript analysis/network/build_duckdb.R stackit-ladder-05
-    Rscript analysis/network/validate_csv.R stackit-ladder-05
-    Rscript analysis/network/render_network_benchmark_analysis.R stackit-ladder-05
+Note for a future session: the duckdb-dependent scripts need
+`nix develop .#analysis --command ...`; the default shell lacks duckdb, tidyr,
+readr, stringr and lubridate. The three base-R parsers (`build_csv.R`,
+`build_cpu_csv.R`, `build_softnet_csv.R`, `build_socket_csv.R`) run anywhere.
 
 ## Data quality note
 

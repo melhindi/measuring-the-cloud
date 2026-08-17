@@ -28,11 +28,28 @@ FACTS_OUT=""
 # crossable with any profile, the way CPU_IDLE_PINNING already is.
 BUSY_POLL="0"
 RPS_CPUS=""
+# Raise net.core.rmem_max/wmem_max to at least this, when a scenario asks a
+# socket for a specific buffer size.
+#
+# It has to travel with the buffer request rather than being a profile member,
+# because the kernel computes the effective buffer as
+# 2 * min(SO_RCVBUF_request, rmem_max) -- so a request above the ceiling is
+# silently clamped. Measured locally: requesting 8 MB against rmem_max 4 MB
+# yields rb 8388608, not 16777216. On a node where standard leaves rmem_max at
+# 212992, --buffer-size alone can therefore reach 425984 and no further, which
+# is not enough to absorb the millisecond-scale scheduling gaps that were
+# destroying half the UDP traffic.
+#
+# Raising the ceiling confounds nothing on its own. rmem_max is only a limit on
+# what an application may ask for, and the measurement that motivated all of
+# this is precisely that nothing was asking: the network-throughput profile
+# raised rmem_max 630x and every socket still got 212992.
+MIN_RMEM_MAX=""
 
 usage() {
   cat >&2 <<USAGE
 usage: $0 [standard|network-throughput|tuned] [--facts-out PATH]
-          [--busy-poll 0|1] [--rps-cpus HEXMASK]
+          [--busy-poll 0|1] [--rps-cpus HEXMASK] [--min-rmem-max BYTES]
 USAGE
 }
 
@@ -47,6 +64,7 @@ while [[ $# -gt 0 ]]; do
     --facts-out) FACTS_OUT="$2"; shift 2 ;;
     --busy-poll) BUSY_POLL="$2"; shift 2 ;;
     --rps-cpus) RPS_CPUS="$2"; shift 2 ;;
+    --min-rmem-max) MIN_RMEM_MAX="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage; exit 1 ;;
   esac
@@ -157,6 +175,24 @@ apply_storage_tuned() {
 # bits for offline CPUs are dropped, and on a single-queue virtio NIC the write
 # may land yet do nothing -- so what was asked for is not evidence of what took.
 apply_receive_knobs() {
+  if [[ -n "$MIN_RMEM_MAX" ]]; then
+    local cur_r cur_w
+    cur_r="$(sysctl -n net.core.rmem_max 2>/dev/null || echo 0)"
+    cur_w="$(sysctl -n net.core.wmem_max 2>/dev/null || echo 0)"
+    # Raise only. A profile that already set a larger ceiling keeps it, so this
+    # cannot quietly shrink network-throughput when the two are crossed.
+    if [[ "$cur_r" =~ ^[0-9]+$ && "$cur_r" -lt "$MIN_RMEM_MAX" ]]; then
+      apply_sysctl net.core.rmem_max "$MIN_RMEM_MAX"
+    else
+      log "net.core.rmem_max already ${cur_r} >= ${MIN_RMEM_MAX}; left alone"
+    fi
+    if [[ "$cur_w" =~ ^[0-9]+$ && "$cur_w" -lt "$MIN_RMEM_MAX" ]]; then
+      apply_sysctl net.core.wmem_max "$MIN_RMEM_MAX"
+    else
+      log "net.core.wmem_max already ${cur_w} >= ${MIN_RMEM_MAX}; left alone"
+    fi
+  fi
+
   if [[ "$BUSY_POLL" == "1" ]]; then
     # 50 us is the conventional starting point: long enough to cover an
     # inter-arrival gap at the rates in this study, short enough that an idle

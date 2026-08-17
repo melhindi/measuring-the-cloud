@@ -17,6 +17,18 @@ SOCKPERF_NOFILE_LIMIT="${SOCKPERF_NOFILE_LIMIT:-32768}"
 MPS=""
 BURST="1"
 REPLY_EVERY="1"
+# Socket receive/send buffer, in bytes, via sockperf --buffer-size (SO_RCVBUF /
+# SO_SNDBUF). Empty means the system default, which is what every run before
+# this used.
+#
+# This exists because net.core.rmem_max is a ceiling on what an application may
+# request, not a size it receives. UDP does not autotune the way TCP does, so a
+# UDP socket takes net.core.rmem_default regardless of rmem_max -- and the
+# network-throughput profile raises rmem_max 630x while leaving rmem_default
+# alone. Measured on stackit-ladder-05: rmem_max 212992 vs 134217728 across the
+# two profiles, and skmem rb 212992 in BOTH. The study's conclusion that a 630x
+# buffer did not reduce UDP loss was drawn from a buffer that never changed.
+BUFFER_SIZE=""
 FULL_LOG="0"
 
 default_cpu_list() {
@@ -31,7 +43,7 @@ default_cpu_list() {
 
 usage() {
   cat >&2 <<USAGE
-usage: $0 --role server|client [--protocol tcp|udp] [--mode pp] [--server-ip IP] [--port N] [--msg-size N] [--runtime-sec N] [--out-dir PATH] [--cpu-list LIST]
+usage: $0 --role server|client [--protocol tcp|udp] [--mode pp] [--server-ip IP] [--port N] [--msg-size N] [--runtime-sec N] [--out-dir PATH] [--cpu-list LIST] [--buffer-size BYTES]
 USAGE
 }
 
@@ -49,6 +61,7 @@ while [[ $# -gt 0 ]]; do
     --mps) MPS="$2"; shift 2 ;;
     --burst) BURST="$2"; shift 2 ;;
     --reply-every) REPLY_EVERY="$2"; shift 2 ;;
+    --buffer-size) BUFFER_SIZE="$2"; shift 2 ;;
     --full-log) FULL_LOG="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage; exit 1 ;;
@@ -61,6 +74,10 @@ case "$MODE" in
   pp|ul) ;;
   *) echo "--mode must be pp (ping-pong) or ul (under-load)" >&2; exit 1 ;;
 esac
+if [[ -n "$BUFFER_SIZE" && ! "$BUFFER_SIZE" =~ ^[0-9]+$ ]]; then
+  echo "--buffer-size must be a byte count" >&2
+  exit 1
+fi
 if [[ "$MODE" == "ul" && -n "$MPS" && ! "$MPS" =~ ^([0-9]+|max)$ ]]; then
   echo "--mps must be a positive integer or 'max'" >&2
   exit 1
@@ -81,9 +98,18 @@ if [[ "$PROTOCOL" == "tcp" ]]; then
   proto_args+=(--tcp)
 fi
 
+# Both roles, not just the client. The overflow measured on stackit-ladder-05 was
+# on the server -- 1,364,146 UdpRcvbufErrors against 1,432,412 delivered -- and
+# under-load has both ends receiving, so sizing only one would leave the arm
+# half-treated in exactly the direction that matters.
+buf_args=()
+if [[ -n "$BUFFER_SIZE" ]]; then
+  buf_args+=(--buffer-size "$BUFFER_SIZE")
+fi
+
 if [[ "$ROLE" == "server" ]]; then
   cap_sockperf_nofile
-  exec taskset -c "$CPU_LIST" sockperf server "${proto_args[@]}" --ip 0.0.0.0 --port "$PORT"
+  exec taskset -c "$CPU_LIST" sockperf server "${proto_args[@]}" ${buf_args[@]+"${buf_args[@]}"} --ip 0.0.0.0 --port "$PORT"
 fi
 
 [[ -n "$SERVER_IP" ]] || { echo "--server-ip is required for client role" >&2; exit 1; }
@@ -94,11 +120,11 @@ if [[ "$MODE" == "ul" ]]; then
   # under-load: the client emits at a controlled offered rate instead of waiting
   # for each reply, so latency can be read as a function of load rather than
   # only at the idle operating point ping-pong measures.
-  cmd=(taskset -c "$CPU_LIST" sockperf under-load "${proto_args[@]}" --ip "$SERVER_IP" --port "$PORT" --msg-size "$MSG_SIZE" --time "$RUNTIME_SEC" --burst "$BURST" --reply-every "$REPLY_EVERY" --full-rtt)
+  cmd=(taskset -c "$CPU_LIST" sockperf under-load "${proto_args[@]}" ${buf_args[@]+"${buf_args[@]}"} --ip "$SERVER_IP" --port "$PORT" --msg-size "$MSG_SIZE" --time "$RUNTIME_SEC" --burst "$BURST" --reply-every "$REPLY_EVERY" --full-rtt)
   [[ -n "$MPS" ]] && cmd+=(--mps "$MPS")
   [[ "$FULL_LOG" == "1" ]] && cmd+=(--full-log "${OUT_DIR}/sockperf-full.csv")
 else
-  cmd=(taskset -c "$CPU_LIST" sockperf pp "${proto_args[@]}" --ip "$SERVER_IP" --port "$PORT" --msg-size "$MSG_SIZE" --time "$RUNTIME_SEC" --full-rtt)
+  cmd=(taskset -c "$CPU_LIST" sockperf pp "${proto_args[@]}" ${buf_args[@]+"${buf_args[@]}"} --ip "$SERVER_IP" --port "$PORT" --msg-size "$MSG_SIZE" --time "$RUNTIME_SEC" --full-rtt)
 fi
 
 printf '%q' "${cmd[0]}" >"${OUT_DIR}/client.cmd"

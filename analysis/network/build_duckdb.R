@@ -17,6 +17,7 @@
 #   network_capacity_intervals per-second samples inside an iperf3 run
 #   network_softnet            per-CPU receive-path counters per repetition
 #   network_cpu                per-CPU utilisation and steal per repetition
+#   network_socket             effective socket buffer and drops per repetition
 #
 # Derived columns are the point of this file. Three quantities were repeatedly
 # got wrong while analysing this data by hand, so they are computed once here
@@ -128,6 +129,23 @@ if (file.exists(cpu_csv)) {
 create table network_cpu as
 select * from read_csv_auto('%s', header = true)
 ", gsub("'", "''", cpu_csv, fixed = TRUE))))
+}
+
+# The sockperf socket's effective buffer and drops. This is what makes a buffer
+# treatment falsifiable: rb_bytes is what the socket got, not what was asked for,
+# and the two differ because the kernel computes 2 * min(request, rmem_max).
+socket_csv <- file.path(in_dir, "network_socket.csv")
+if (file.exists(socket_csv)) {
+  invisible(dbExecute(con, sprintf("
+create table network_socket as
+select *,
+  -- A queue that sat at the buffer ceiling was buffer limited. Measured at
+  -- 1.00 across four of five arms on stackit-ladder-05, with rb identical in
+  -- every one of them.
+  try_cast(recv_queue_max as double)
+    / nullif(try_cast(rb_bytes as double), 0)                as queue_fill_ratio
+from read_csv_auto('%s', header = true)
+", gsub("'", "''", socket_csv, fixed = TRUE))))
 }
 
 failures_csv <- file.path(in_dir, "network_failures.csv")

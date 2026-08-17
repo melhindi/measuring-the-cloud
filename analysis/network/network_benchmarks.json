@@ -509,5 +509,54 @@
     "r_code": [
       "kable(df, caption = \"Delivered rate by CPU steal band at high offered load. A monotonic fall means the rung is measuring hypervisor contention, not the network.\")"
     ]
+  },
+  {
+    "description": "Was UDP loss buffer limited? (socket fill against offered rate)",
+    "group": "Data Quality",
+    "sql_code": [
+      "-- The socket receive buffer, read out of ss rather than inferred from a",
+      "-- sysctl. rb_bytes is what the socket actually got; queue_fill_ratio is how",
+      "-- close the receive queue came to filling it.",
+      "--",
+      "-- Measured on stackit-ladder-05, server side, UDP: fill climbs 0.006 at",
+      "-- ping-pong to 0.987 at 100k msg/s, and drops appear exactly where fill",
+      "-- starts rising -- 0 below 10k, 64 at 10k, 598,780 at 100k. That is a",
+      "-- buffer-limited system, and nstat agrees: every loss is UdpRcvbufErrors",
+      "-- with IpInDiscards at zero, so nothing was lost in the network.",
+      "--",
+      "-- The catch, and the reason this query exists. rb_bytes was 212992 in all",
+      "-- 105 repetitions of that campaign, in every arm -- including the",
+      "-- network-throughput arm, which raises net.core.rmem_max 630x to",
+      "-- 134217728. rmem_max only caps what an application may request, and UDP",
+      "-- has no receive autotuning, so the socket took rmem_default and the",
+      "-- profile never touched it. The study's conclusion that a 630x buffer did",
+      "-- not reduce UDP loss was drawn from a buffer that never changed.",
+      "--",
+      "-- Treat rb_bytes as the check that a buffer treatment took effect. The",
+      "-- kernel sets it to 2 * min(request, rmem_max), so a request above the",
+      "-- ceiling is silently clamped and the requested column will not show it.",
+      "SELECT s.provider,",
+      "       sk.benchmark_name,",
+      "       l.offered_mps,",
+      "       round(avg(sk.rb_bytes))                        AS rb_bytes,",
+      "       round(avg(sk.queue_fill_ratio), 3)             AS queue_fill_ratio,",
+      "       round(avg(sk.drops_delta))                     AS socket_drops,",
+      "       round(avg(l.delivered_pct), 1)                 AS delivered_pct",
+      "FROM network_socket sk",
+      "JOIN network_latency l",
+      "  ON  l.run_id         = sk.run_id",
+      "  AND l.scenario_name  = sk.scenario_name",
+      "  AND l.benchmark_name = sk.benchmark_name",
+      "  AND l.repetition     = sk.repetition",
+      "JOIN (SELECT DISTINCT run_id, scenario_name, provider FROM network_latency) s",
+      "  ON s.run_id = sk.run_id AND s.scenario_name = sk.scenario_name",
+      "-- The receiving end is where a buffer overflows.",
+      "WHERE sk.role = 'server' AND l.protocol = 'udp'",
+      "GROUP BY 1, 2, 3",
+      "ORDER BY 1, 3"
+    ],
+    "r_code": [
+      "kable(df, caption = \"UDP socket buffer fill and drops against offered rate. Drops appearing as queue_fill_ratio approaches 1 means the loss is buffer limited. Check rb_bytes to confirm a buffer treatment actually reached the socket.\")"
+    ]
   }
 ]

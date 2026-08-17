@@ -264,6 +264,10 @@ scenario_common_row <- function(run_id, scenario_name, scenario_env) {
     # by the kernel and a write to a single-queue virtio NIC can succeed and
     # still steer nothing, so the mask asked for is not evidence of the mask in
     # force -- group by the effective one.
+    # Requested, in bytes. The effective buffer is 2 * min(this, rmem_max), so
+    # this column alone does not say what the socket got -- pair it with
+    # rb_bytes from network_socket.csv, which reads the value out of ss.
+    sockperf_buffer_size_requested = to_num(env_get(scenario_env, "SOCKPERF_BUFFER_SIZE")),
     busy_poll_requested = env_get(scenario_env, "BUSY_POLL"),
     tuning_busy_poll_usec = to_num(env_get(scenario_env, "NODE_OS_TUNING_BUSY_POLL")),
     tuning_busy_read_usec = to_num(env_get(scenario_env, "NODE_OS_TUNING_BUSY_READ")),
@@ -752,6 +756,7 @@ scenario_cols <- c(
   "client_cpu_list", "server_cpu_list",
   "tuning_congestion_control", "tuning_qdisc",
   "tuning_rmem_max", "tuning_netdev_max_backlog", "tuning_netdev_budget",
+  "sockperf_buffer_size_requested",
   "busy_poll_requested", "tuning_busy_poll_usec", "tuning_busy_read_usec",
   "rps_cpus_requested", "rps_cpus_effective",
   "cpu_idle_pinning_requested", "cpu_idle_pinning_supported",

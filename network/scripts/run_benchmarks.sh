@@ -17,6 +17,11 @@ CPU_IDLE_PINNING="0"
 # they are not profile members.
 BUSY_POLL="0"
 RPS_CPUS=""
+# Socket buffer for the sockperf arms, in bytes. Scenario-level rather than
+# per-benchmark: it is a treatment applied to a whole arm, like BUSY_POLL, not a
+# property of one rung. Empty keeps the system default, which is what every run
+# before this used.
+SOCKPERF_BUFFER_SIZE=""
 USE_SPOT="0"
 # Repetitions that fail are recorded and skipped rather than aborting the
 # scenario; this counts them so the scenario still reports failure at the end.
@@ -32,7 +37,7 @@ declare -a BENCHMARK_NAMES=()
 
 usage() {
   cat >&2 <<USAGE
-usage: $0 --tofu-dir PATH --scenario-name NAME --benchmark-dir PATH --run-id ID [--local-log-dir PATH] [--os-tuning standard|network-throughput] [--instance-affinity none|co-located|different-host] [--access-mode public|private] [--server-region REGION] [--placement-mode MODE] [--benchmark NAME] [--busy-poll 0|1] [--rps-cpus HEXMASK]
+usage: $0 --tofu-dir PATH --scenario-name NAME --benchmark-dir PATH --run-id ID [--local-log-dir PATH] [--os-tuning standard|network-throughput] [--instance-affinity none|co-located|different-host] [--access-mode public|private] [--server-region REGION] [--placement-mode MODE] [--benchmark NAME] [--busy-poll 0|1] [--rps-cpus HEXMASK] [--sockperf-buffer-size BYTES]
 USAGE
 }
 
@@ -48,6 +53,7 @@ while [[ $# -gt 0 ]]; do
     --cpu-idle-pinning) CPU_IDLE_PINNING="$2"; shift 2 ;;
     --busy-poll) BUSY_POLL="$2"; shift 2 ;;
     --rps-cpus) RPS_CPUS="$2"; shift 2 ;;
+    --sockperf-buffer-size) SOCKPERF_BUFFER_SIZE="$2"; shift 2 ;;
     --use-spot) USE_SPOT="$2"; shift 2 ;;
     --collect-telemetry) COLLECT_TELEMETRY="$2"; shift 2 ;;
     --telemetry-interval-sec) TELEMETRY_INTERVAL_SEC="$2"; shift 2 ;;
@@ -91,6 +97,9 @@ esac
 if [[ -n "$RPS_CPUS" ]]; then
   [[ "$RPS_CPUS" =~ ^[0-9a-fA-F]+(,[0-9a-fA-F]+)*$ ]] \
     || die "--rps-cpus must be a hex CPU mask, e.g. 1 or 0000ffff or ffffffff,ffffffff"
+fi
+if [[ -n "$SOCKPERF_BUFFER_SIZE" ]]; then
+  [[ "$SOCKPERF_BUFFER_SIZE" =~ ^[0-9]+$ ]] || die "--sockperf-buffer-size must be a byte count"
 fi
 case "$USE_SPOT" in
   0|1) ;;
@@ -384,7 +393,7 @@ kill_stale_server() {
 write_remote_metadata() {
   local tmp
   tmp="$(mktemp /tmp/cloud-measuring-scenario.XXXXXX.env)"
-  write_env_file "$tmp" RUN_ID SCENARIO_NAME OS_TUNING INSTANCE_AFFINITY PLACEMENT_GROUP_NAME PLACEMENT_GROUP_STRATEGY ACCESS_MODE CLIENT_PUBLIC_IP SERVER_PUBLIC_IP CLIENT_PRIVATE_IP SERVER_PRIVATE_IP CLIENT_SSH_HOST SERVER_SSH_HOST SSH_USER CLIENT_MACHINE_TYPE SERVER_MACHINE_TYPE CLIENT_AVAILABILITY_ZONE SERVER_AVAILABILITY_ZONE CLIENT_CPU_LIST SERVER_CPU_LIST SERVER_REGION PLACEMENT_MODE CPU_IDLE_PINNING BUSY_POLL RPS_CPUS USE_SPOT
+  write_env_file "$tmp" RUN_ID SCENARIO_NAME OS_TUNING INSTANCE_AFFINITY PLACEMENT_GROUP_NAME PLACEMENT_GROUP_STRATEGY ACCESS_MODE CLIENT_PUBLIC_IP SERVER_PUBLIC_IP CLIENT_PRIVATE_IP SERVER_PRIVATE_IP CLIENT_SSH_HOST SERVER_SSH_HOST SSH_USER CLIENT_MACHINE_TYPE SERVER_MACHINE_TYPE CLIENT_AVAILABILITY_ZONE SERVER_AVAILABILITY_ZONE CLIENT_CPU_LIST SERVER_CPU_LIST SERVER_REGION PLACEMENT_MODE CPU_IDLE_PINNING BUSY_POLL RPS_CPUS SOCKPERF_BUFFER_SIZE USE_SPOT
   scp_to "$tmp" "$CLIENT_SSH_HOST" "${REMOTE_SCENARIO_DIR}/scenario.env"
   scp_to "$tmp" "$SERVER_SSH_HOST" "${REMOTE_SCENARIO_DIR}/scenario.env"
   rm -f "$tmp"
@@ -413,7 +422,7 @@ apply_os_tuning() {
   log "applying OS tuning profile '${OS_TUNING}' on ${label}"
   # The tuning script is shipped by push_remote_scripts, not baked into the
   # image, so this must run after it.
-  ssh_run "$host" "mkdir -p '${REMOTE_SCENARIO_DIR}' && sudo '${REMOTE_BIN_DIR}/apply-os-tuning.sh' '${OS_TUNING}' --facts-out '${REMOTE_SCENARIO_DIR}/os-tuning.env' --busy-poll '${BUSY_POLL}' --rps-cpus '${RPS_CPUS}' >'${REMOTE_SCENARIO_DIR}/os-tuning.log' 2>&1"
+  ssh_run "$host" "mkdir -p '${REMOTE_SCENARIO_DIR}' && sudo '${REMOTE_BIN_DIR}/apply-os-tuning.sh' '${OS_TUNING}' --facts-out '${REMOTE_SCENARIO_DIR}/os-tuning.env' --busy-poll '${BUSY_POLL}' --rps-cpus '${RPS_CPUS}' --min-rmem-max '${SOCKPERF_BUFFER_SIZE}' >'${REMOTE_SCENARIO_DIR}/os-tuning.log' 2>&1"
 }
 
 push_remote_scripts() {
@@ -569,7 +578,8 @@ run_one_sockperf_repetition() {
     --protocol "$SOCKPERF_PROTOCOL" \
     --mode "$SOCKPERF_MODE" \
     --port "$SOCKPERF_PORT" \
-    --cpu-list "$SERVER_CPU_LIST"
+    --cpu-list "$SERVER_CPU_LIST" \
+    ${SOCKPERF_BUFFER_SIZE:+--buffer-size "$SOCKPERF_BUFFER_SIZE"}
 
   wait_for_server_ready sockperf "$SOCKPERF_PROTOCOL" "$SOCKPERF_PORT" "$SERVER_READY_TIMEOUT_SEC"
 
@@ -585,6 +595,12 @@ run_one_sockperf_repetition() {
     --out-dir "${remote_rep_dir}/client"
     --cpu-list "$CLIENT_CPU_LIST"
   )
+  # Applied for pp as well as ul. Ping-pong has one message outstanding so it
+  # cannot overflow a buffer, but leaving the anchor arm on a different socket
+  # configuration from the ladder would make the two non-comparable.
+  if [[ -n "$SOCKPERF_BUFFER_SIZE" ]]; then
+    client_args+=(--buffer-size "$SOCKPERF_BUFFER_SIZE")
+  fi
   if [[ "$SOCKPERF_MODE" == "ul" ]]; then
     client_args+=(--burst "$SOCKPERF_BURST" --reply-every "$SOCKPERF_REPLY_EVERY" --full-log "$SOCKPERF_FULL_LOG")
     [[ -n "$SOCKPERF_MPS" ]] && client_args+=(--mps "$SOCKPERF_MPS")

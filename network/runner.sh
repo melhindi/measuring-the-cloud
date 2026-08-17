@@ -91,7 +91,7 @@ run_scenario() {
   scenario_file="$(abs_path "$scenario_file")"
   require_file "$scenario_file"
 
-  unset SCENARIO_NAME PROVIDER TOFU_DIR TFVARS_FILE BENCHMARK_DIR PLACEMENT_MODE OS_TUNING INSTANCE_AFFINITY CLIENT_MACHINE_TYPE SERVER_MACHINE_TYPE CLIENT_AVAILABILITY_ZONE SERVER_AVAILABILITY_ZONE CLIENT_REGION SERVER_REGION ENABLE_TIER1_NETWORKING CPU_IDLE_PINNING BUSY_POLL RPS_CPUS USE_SPOT SKIP SKIP_REASON
+  unset SCENARIO_NAME PROVIDER TOFU_DIR TFVARS_FILE BENCHMARK_DIR PLACEMENT_MODE OS_TUNING INSTANCE_AFFINITY CLIENT_MACHINE_TYPE SERVER_MACHINE_TYPE CLIENT_AVAILABILITY_ZONE SERVER_AVAILABILITY_ZONE CLIENT_REGION SERVER_REGION ENABLE_TIER1_NETWORKING CPU_IDLE_PINNING BUSY_POLL RPS_CPUS SOCKPERF_BUFFER_SIZE USE_SPOT SKIP SKIP_REASON
   # shellcheck disable=SC1090
   source "$scenario_file"
 
@@ -162,6 +162,15 @@ run_scenario() {
     [[ "$RPS_CPUS" =~ ^[0-9a-fA-F]+(,[0-9a-fA-F]+)*$ ]] \
       || die "${scenario_file}: RPS_CPUS must be a hex CPU mask, e.g. 1 or 0000ffff"
   fi
+  # Socket buffer for the sockperf arms. Off by default so every existing
+  # scenario keeps the system default and stays comparable with what has already
+  # been measured -- which, as it turns out, is 212992 bytes for every run in
+  # the study to date, under both OS tuning profiles.
+  SOCKPERF_BUFFER_SIZE="${SOCKPERF_BUFFER_SIZE:-}"
+  if [[ -n "$SOCKPERF_BUFFER_SIZE" ]]; then
+    [[ "$SOCKPERF_BUFFER_SIZE" =~ ^[0-9]+$ ]] \
+      || die "${scenario_file}: SOCKPERF_BUFFER_SIZE must be a byte count, e.g. 8388608"
+  fi
   # Off by default and AWS-only: spot is implemented for the AWS module, and
   # STACKIT has no spot market at all. Rejected rather than ignored elsewhere.
   USE_SPOT="${USE_SPOT:-0}"
@@ -212,6 +221,7 @@ run_scenario() {
     echo "  cpu_idle_pinning=${CPU_IDLE_PINNING}"
     echo "  busy_poll=${BUSY_POLL}"
     echo "  rps_cpus=${RPS_CPUS:-}"
+    echo "  sockperf_buffer_size=${SOCKPERF_BUFFER_SIZE:-}"
     echo "  use_spot=${USE_SPOT}"
     [[ -n "$CLIENT_MACHINE_TYPE" ]] && echo "  client_machine_type=${CLIENT_MACHINE_TYPE}"
     [[ -n "$SERVER_MACHINE_TYPE" ]] && echo "  server_machine_type=${SERVER_MACHINE_TYPE}"
@@ -309,6 +319,7 @@ run_scenario() {
       --cpu-idle-pinning "$CPU_IDLE_PINNING" \
       --busy-poll "$BUSY_POLL" \
       ${RPS_CPUS:+--rps-cpus "$RPS_CPUS"} \
+      ${SOCKPERF_BUFFER_SIZE:+--sockperf-buffer-size "$SOCKPERF_BUFFER_SIZE"} \
       --use-spot "$USE_SPOT" \
       --collect-telemetry "$COLLECT_TELEMETRY" \
       --access-mode "$ACCESS_MODE" \
