@@ -98,6 +98,66 @@ drain becomes loss.
 penalises the protocol under test.** Any UDP-vs-TCP comparison on a contended
 host is biased, not merely noisy.
 
+## How often a STACKIT provisioning is contended: usually
+
+Measured across every provisioning in the repository, taking each one's mean
+steal on the benchmark core and the worse of its two ends:
+
+    provider   provisionings   contended (>5%)   median worst-end   max
+    aws                    9          0 (  0%)              0.0%    0.0%
+    gcp                    6          0 (  0%)              0.0%    0.0%
+    stackit               14         12 ( 86%)             12.9%   23.6%
+
+Only 2 of 14 STACKIT provisionings were genuinely quiet. There is no practical
+"retry until you draw a quiet host" strategy on g2a.2d -- contention is the
+normal case.
+
+This corrects an earlier estimate in this session of a ~27% bad-draw rate with a
+bimodal distribution. That came from reading per-repetition steal at the 100k
+rung only, where values happened to cluster near 1% or near 30%. Across whole
+provisionings the distribution is a continuum from 1.7% to 23.6%. The practical
+consequence of the error was a recommendation that six provisionings would yield
+four or five quiet draws; at the true rate it would have yielded about one.
+
+## Consequence: UDP's deficit scales with contention
+
+STACKIT, 100k msg/s, 10 repetitions per cell:
+
+    arm         proto   worst steal   delivered   p50
+    inter-AZ    tcp            28%       99,998   2,088 us
+    inter-AZ    udp            32%       40,420   7,464 us
+    intra-AZ    tcp            20%       99,996   1,916 us
+    intra-AZ    udp            35%       42,678   8,023 us
+
+Against the quietest draw available (ladder-05 inter-AZ, 4.9% worst-end), where
+UDP delivered 90,772 of 100,000. So UDP delivers ~91% of offered load on a quiet
+host and ~40% on a contended one, while TCP holds 100% throughout.
+
+The honest reading is a product statement rather than a network one: on g2a.2d,
+UDP at high message rates is unreliable in practice, because contention is the
+norm and UDP converts contention into loss where TCP converts it into a slower
+ACK loop.
+
+## What repetitions bought, and what they did not
+
+stackit-reps-01 ran both arms at 10 repetitions instead of 3.
+
+Gained: stall frequency became measurable. One repetition of the intra-AZ UDP
+100k arm recorded a p99 of 905,373 us against a median of 34,182 across the
+other nine -- so stalls are a 1-in-10 event, not the one-off the earlier 1.04
+second outlier appeared to be.
+
+Not gained: precision on the central estimate. A 3-repetition median would have
+reported p99 between 33,451 and 34,341 us across every consecutive window,
+within 3% of the 10-repetition median. The median already discards the stall.
+
+Also not gained: within-host steal correlation. Steal varies only in a narrow
+band within one provisioning (19-28% at the 100k rung), so per-repetition
+correlations come out inconsistent -- r = 0.97 for p50 at TCP 100k but -0.92 at
+TCP 25k, which is a range artifact. The steal-to-latency relationship is
+established between hosts, where the range spans two orders of magnitude, and
+repetitions cannot substitute for that.
+
 ## Limit: steal control is necessary but not sufficient
 
 The two low-steal UDP measurements above — 2.4% and 2.0% — differ by 20% in
