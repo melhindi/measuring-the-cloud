@@ -88,7 +88,7 @@ select
   sum(case when provider is null or provider = '' then 1 else 0 end) as scenarios_without_provider,
   sum(case when placement_class is null or placement_class = '' then 1 else 0 end) as scenarios_without_placement,
   sum(case when placement_class not in
-        ('single-az', 'co-located-single-az', 'different-host-single-az', 'multi-az', 'cross-region')
+        ('uncontrolled-single-az', 'co-located-single-az', 'different-host-single-az', 'multi-az', 'cross-region')
       then 1 else 0 end) as scenarios_with_unknown_placement,
   sum(case when pair_class is null or pair_class = '' then 1 else 0 end) as scenarios_without_pair_class,
   sum(case when placement_class = 'cross-region'

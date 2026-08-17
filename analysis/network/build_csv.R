@@ -167,6 +167,26 @@ region_of_zone <- function(zone) {
   zone
 }
 
+# Which investigation a scenario belongs to.
+#
+# The artifacts directory accumulates every run ever made: the TCP-vs-UDP
+# latency ladder, an older iperf3 throughput suite, and plumbing smoke tests.
+# They are not comparable. The older suite ran sockperf in ping-pong mode at
+# 64 B, which pools silently with the ladder's ping-pong anchor -- measured, that
+# alone changed 5 of 16 groups in the coordinated-omission query. Six of the
+# nineteen published queries reported different numbers with the other runs
+# present, so this is not a hypothetical.
+#
+# Recorded rather than inferred at query time, because a published dataset is
+# read by people writing their own SQL who have no way to know that
+# sockperf-tcp-64b and sockperf-pp-64b-tcp belong to different studies.
+derive_suite <- function(scenario_name) {
+  if (is.na(scenario_name)) return(NA_character_)
+  if (grepl("_ladder(__|$)", scenario_name)) return("tcp-udp-latency")
+  if (grepl("smoke|runner-test", scenario_name)) return("smoke")
+  "iperf3-throughput"
+}
+
 derive_placement_class <- function(scenario_env) {
   placement_mode <- env_get(scenario_env, "PLACEMENT_MODE")
   server_region <- env_get(scenario_env, "SERVER_REGION")
@@ -187,7 +207,16 @@ derive_placement_class <- function(scenario_env) {
   if (!same_az) return("multi-az")
   if (identical(affinity, "co-located")) return("co-located-single-az")
   if (identical(affinity, "different-host")) return("different-host-single-az")
-  "single-az"
+  # Same AZ with no affinity constraint: the provider placed the pair wherever it
+  # liked and does not report where. It may have co-located them. Named for what
+  # it is rather than "single-az", which read like a peer of the two classes
+  # above when it is actually the absence of the control they apply -- a
+  # measurement of unknown composition, not a third placement.
+  #
+  # Note this is unrelated to the PLACEMENT_MODE=single-az set by many scenario
+  # files. That is a scenario input, consulted above only for cross-region; this
+  # is the derived class, and it keys off INSTANCE_AFFINITY.
+  "uncontrolled-single-az"
 }
 
 # Client and server machine types are configured independently by the runner but
@@ -234,6 +263,7 @@ scenario_common_row <- function(run_id, scenario_name, scenario_env) {
     # original.
     is_control = grepl("__control$", scenario_name),
     base_scenario_name = sub("__control$", "", scenario_name),
+    suite = derive_suite(scenario_name),
     placement_class = derive_placement_class(scenario_env),
     placement_mode = env_get(scenario_env, "PLACEMENT_MODE"),
     server_region = env_get(scenario_env, "SERVER_REGION"),
@@ -747,6 +777,7 @@ scenario_cols <- c(
   "run_id", "scenario_name", "is_control", "base_scenario_name", "provider",
   "client_machine_type", "server_machine_type",
   "client_availability_zone", "server_availability_zone",
+  "suite",
   "placement_class", "placement_mode", "server_region", "pair_class",
   "instance_affinity", "os_tuning", "access_mode",
   "client_private_ip", "server_private_ip",
@@ -809,8 +840,30 @@ iperf3_cols <- c(
   "iperf3_version", "timestamp", "timestamp_epoch"
 )
 
+# Deliberately NOT measurement_prefix_cols.
+#
+# Interval rows outnumber measurement rows by roughly 13 to 1 -- 20,762 against
+# 1,614 -- and carrying all 78 scenario columns on each one repeated the same
+# machine type, tuning profile, IP addresses and kernel version 20,762 times.
+# The published DuckDB was 6.0 MB, of which this table was the bulk.
+#
+# Kept here: the key needed to join the rest back from network_capacity, plus
+# the handful of scenario columns interval consumers actually read, plus
+# is_control -- which the report's control-excluding view filters on, so
+# dropping it would break every interval chunk rather than merely lose a column.
+#
+# Anything else is one join away:
+#   select i.*, c.* exclude (run_id, scenario_name, benchmark_name, repetition)
+#   from network_capacity_intervals i
+#   join network_capacity c using (run_id, scenario_name, benchmark_name, repetition)
+#
+# This table is diagnostic by design -- the report says so where it plots it --
+# so paying a 13x row multiplier for scenario metadata that is one join away was
+# the wrong trade for an artifact meant to be downloaded.
 iperf3_interval_cols <- c(
-  measurement_prefix_cols,
+  "run_id", "scenario_name", "is_control", "provider",
+  "placement_class", "os_tuning",
+  "benchmark_name", "repetition",
   "protocol", "interval_index", "interval_start_sec", "interval_end_sec",
   "interval_seconds", "omitted", "perspective",
   "bits_per_second", "mbit_per_sec", "bytes", "packets", "retransmits"

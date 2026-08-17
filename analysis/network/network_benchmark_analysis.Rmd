@@ -215,7 +215,7 @@ default_report_config <- list(
   # Ordering only; values absent from the data are dropped.
   preferred_provider_order = c("stackit", "aws", "gcp"),
   preferred_placement_order = c(
-    "co-located-single-az", "single-az", "different-host-single-az",
+    "co-located-single-az", "uncontrolled-single-az", "different-host-single-az",
     "multi-az", "cross-region"
   )
 )

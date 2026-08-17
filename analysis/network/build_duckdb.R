@@ -43,8 +43,28 @@ suppressMessages({
   library(DBI)
 })
 
+# usage: build_duckdb.R <result-id> [out.duckdb] [--suite NAME]
+#
+# --suite restricts every table to one investigation. The artifacts directory
+# accumulates unrelated runs -- an older iperf3 throughput suite, plumbing smoke
+# tests -- and they are not comparable with the latency ladder: the old suite ran
+# sockperf in ping-pong mode at 64 B, which pools with the ladder's ping-pong
+# anchor under any query that does not filter benchmark_name. Measured across the
+# published query set, six of nineteen queries returned different numbers with
+# the other runs present.
+#
+# So the database published alongside an investigation should contain that
+# investigation. Omit the flag to keep everything, which is what local analysis
+# wants.
 args <- commandArgs(trailingOnly = TRUE)
-if (length(args) < 1) stop("usage: build_duckdb.R <result-id> [out.duckdb]")
+suite_filter <- NA_character_
+si <- match("--suite", args)
+if (!is.na(si)) {
+  if (length(args) < si + 1) stop("--suite needs a value")
+  suite_filter <- args[[si + 1]]
+  args <- args[-c(si, si + 1)]
+}
+if (length(args) < 1) stop("usage: build_duckdb.R <result-id> [out.duckdb] [--suite NAME]")
 result_id <- args[[1]]
 
 script_dir <- dirname(sub("^--file=", "", grep("^--file=", commandArgs(FALSE), value = TRUE)[1]))
@@ -155,7 +175,12 @@ left join rep_steal st
 
 invisible(dbExecute(con, sprintf("
 create table network_capacity_intervals as
-select * exclude (source_file)
+-- No exclude here. The interval table is built from a deliberately narrow
+-- column set (see iperf3_interval_cols in build_csv.R) that already omits
+-- source_file and the scenario metadata, because interval rows outnumber
+-- measurement rows 13 to 1 and carrying 78 scenario columns on each was most
+-- of the published file size.
+select *
 from read_csv_auto('%s', header = true)
 ", csv("network_iperf3_intervals.csv"))))
 
@@ -204,8 +229,56 @@ create table network_failures as select * from read_csv_auto('%s', header = true
 ", gsub("'", "''", failures_csv, fixed = TRUE))))
 }
 
+if (!is.na(suite_filter)) {
+  # network_cpu / network_softnet / network_socket carry no suite column -- they
+  # are keyed by scenario_name, so restrict them by membership instead. Done
+  # before the row counts print, so the reported numbers are the published ones.
+  keep <- sprintf("select distinct scenario_name from network_latency
+                   union select distinct scenario_name from network_capacity")
+  # Base tables only. rep_steal is a view over network_cpu, so it follows the
+  # filter automatically and cannot be deleted from.
+  base_tables <- dbGetQuery(con, "select table_name from information_schema.tables where table_type = 'BASE TABLE'")$table_name
+  for (tbl in base_tables) {
+    cols <- dbGetQuery(con, sprintf("select column_name from information_schema.columns where table_name = '%s'", tbl))$column_name
+    if ("suite" %in% cols) {
+      invisible(dbExecute(con, sprintf("delete from %s where suite is distinct from '%s'", tbl, suite_filter)))
+    }
+  }
+  for (tbl in base_tables) {
+    cols <- dbGetQuery(con, sprintf("select column_name from information_schema.columns where table_name = '%s'", tbl))$column_name
+    if (!("suite" %in% cols) && "scenario_name" %in% cols) {
+      invisible(dbExecute(con, sprintf("delete from %s where scenario_name not in (%s)", tbl, keep)))
+    }
+  }
+  cat(sprintf("restricted to suite '%s'\n", suite_filter))
+}
+
 for (tbl in dbGetQuery(con, "select table_name from information_schema.tables order by 1")$table_name) {
   n <- dbGetQuery(con, sprintf("select count(*) as n from %s", tbl))$n
   cat(sprintf("  %-28s %6d rows\n", tbl, n))
 }
+# DELETE frees rows but not pages, so a filtered build stays the size of the
+# unfiltered one -- 4.2 MB of mostly-empty file. There is no VACUUM; the
+# supported way to reclaim is to copy the database out. Done only when a filter
+# ran, so the ordinary build path is untouched.
+if (!is.na(suite_filter)) {
+  dbDisconnect(con, shutdown = TRUE)
+  on.exit()
+  compact <- paste0(out_path, ".compact")
+  if (file.exists(compact)) invisible(file.remove(compact))
+  # In-memory connection with both databases attached by name. Connecting
+  # directly to the target names its catalog after the file, not "memory", so
+  # the copy has to address it explicitly.
+  cc <- dbConnect(duckdb::duckdb())
+  invisible(dbExecute(cc, sprintf("attach '%s' as src (read_only)", gsub("'", "''", out_path, fixed = TRUE))))
+  invisible(dbExecute(cc, sprintf("attach '%s' as tgt", gsub("'", "''", compact, fixed = TRUE))))
+  invisible(dbExecute(cc, "copy from database src to tgt"))
+  invisible(dbExecute(cc, "detach tgt"))
+  invisible(dbExecute(cc, "detach src"))
+  dbDisconnect(cc, shutdown = TRUE)
+  before <- file.info(out_path)$size
+  invisible(file.rename(compact, out_path))
+  cat(sprintf("compacted %.1f MB -> %.1f MB\n", before / 1e6, file.info(out_path)$size / 1e6))
+}
+
 cat(sprintf("\nWrote %s\n", out_path))

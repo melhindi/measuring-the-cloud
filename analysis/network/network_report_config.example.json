@@ -18,7 +18,7 @@
   ],
   "preferred_placement_order": [
     "co-located-single-az",
-    "single-az",
+    "uncontrolled-single-az",
     "different-host-single-az",
     "multi-az",
     "cross-region"

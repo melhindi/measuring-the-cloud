@@ -213,6 +213,40 @@ in `network_socket.csv`, never from the requested value.
 `stackit_g2a.2d_eu01-1_different-host_standard_bigbuf_ladder` requests 8388608,
 giving an effective 16777216 -- about 79x, or ~218 ms of traffic at 100k msg/s.
 
+## Publishing
+
+The published pair lives at `~/git/cloudspecs/static/network_benchmarks.{duckdb,json}`
+(the README there maps `dbId` to the filename stem).
+
+    Rscript analysis/network/build_csv.R all
+    Rscript analysis/network/build_cpu_csv.R all
+    Rscript analysis/network/build_softnet_csv.R all
+    Rscript analysis/network/build_socket_csv.R all
+    Rscript analysis/network/build_duckdb.R all <out.duckdb> --suite tcp-udp-latency
+
+`--suite` matters. The artifacts directory accumulates every run ever made --
+this latency ladder, an older iperf3 throughput suite, and plumbing smoke tests
+-- and they are not comparable. The old suite ran sockperf in ping-pong mode at
+64 B, which pools with the ladder's ping-pong anchor under any query that does
+not filter benchmark_name.
+
+Measured, not assumed: building both databases and diffing all 19 published
+queries, 6 returned different values for groups present in both -- "What was
+measured" (4 of 9 groups), "Coordinated omission" (5 of 16), "Latency by
+placement" (5 of 16), "Was the ladder ever bandwidth limited?" (2 of 8),
+"Hypervisor CPU steal" (4 of 6) and "Delivered rate against steal" (1 of 11).
+A further 8 gained extra rows without changing shared values, which is harmless.
+
+A published dataset is read by people writing their own SQL who cannot know that
+`sockperf-tcp-64b` and `sockperf-pp-64b-tcp` belong to different investigations,
+so the filter belongs in the artifact rather than in a caveat. The `suite` column
+is carried on every row regardless, so provenance stays visible.
+
+Two implementation notes. DELETE does not reclaim pages in DuckDB, so a filtered
+build is compacted by copying the database out -- without that it stayed the full
+4.2 MB. And the local unfiltered build is unchanged: omit `--suite` for analysis
+across every run, which is what the report renders from.
+
 ## Open decisions
 
 1. Whether to apply `max_steal_pct` as a filter to the report's existing
