@@ -31,6 +31,10 @@ SCENARIO_NAME_SUFFIX=""
 # cannot be recovered after the fact, because the instances are destroyed at the
 # end of the run. Use --no-telemetry to opt out.
 COLLECT_TELEMETRY=1
+# Empty keeps each benchmark file's own REPETITIONS. Raising it improves tail
+# precision within one provisioning; it cannot address host-to-host variance,
+# which measured 51x larger than within-host variance on STACKIT.
+REPETITIONS_OVERRIDE=""
 RUN_ID="run-$(date +%Y%m%d-%H%M%S)"
 LOCAL_RUN_DIR=""
 LOCAL_LAUNCHER_LOG=""
@@ -38,7 +42,7 @@ LOCAL_COMMAND_LOG=""
 
 usage() {
   cat >&2 <<USAGE
-usage: $0 [--scenario FILE ... | --scenario-dir DIR] [--benchmark NAME ...] [--out DIR] [--destroy always|success|never] [--continue-on-error] [--dry-run] [--reversal-control] [--no-telemetry] [--access-mode public|private]
+usage: $0 [--scenario FILE ... | --scenario-dir DIR] [--benchmark NAME ...] [--out DIR] [--destroy always|success|never] [--continue-on-error] [--dry-run] [--reversal-control] [--no-telemetry] [--access-mode public|private] [--repetitions N]
 USAGE
 }
 
@@ -55,6 +59,7 @@ while [[ $# -gt 0 ]]; do
     --collect-telemetry) COLLECT_TELEMETRY=1; shift ;;
     --no-telemetry) COLLECT_TELEMETRY=0; shift ;;
     --access-mode) ACCESS_MODE="$2"; shift 2 ;;
+    --repetitions) REPETITIONS_OVERRIDE="$2"; shift 2 ;;
     --run-id) RUN_ID="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage; exit 1 ;;
@@ -322,6 +327,7 @@ run_scenario() {
       ${SOCKPERF_BUFFER_SIZE:+--sockperf-buffer-size "$SOCKPERF_BUFFER_SIZE"} \
       --use-spot "$USE_SPOT" \
       --collect-telemetry "$COLLECT_TELEMETRY" \
+      ${REPETITIONS_OVERRIDE:+--repetitions "$REPETITIONS_OVERRIDE"} \
       --access-mode "$ACCESS_MODE" \
       ${SERVER_REGION:+--server-region "$SERVER_REGION"} \
       ${PLACEMENT_MODE:+--placement-mode "$PLACEMENT_MODE"} \

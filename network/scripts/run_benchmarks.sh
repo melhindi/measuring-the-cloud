@@ -22,6 +22,21 @@ RPS_CPUS=""
 # property of one rung. Empty keeps the system default, which is what every run
 # before this used.
 SOCKPERF_BUFFER_SIZE=""
+# Overrides the per-benchmark REPETITIONS after the benchmark file is sourced.
+#
+# It cannot be an environment variable: REPETITIONS is deliberately unset before
+# each file is sourced so that benchmark_defaults.sh' ':=' defaults take effect,
+# which would wipe anything exported from outside. Applied after the source
+# instead, so the file's own value is what gets replaced.
+#
+# What this is for. Repetitions within one provisioning are cheap once the
+# instances are up, and they are the only knob that improves tail precision --
+# p50 was already stable to ~1.4% across 3 reps on STACKIT, but p99 moved
+# 6,719/7,738/7,018 us, and one tuned repetition recorded a 1.04-second stall
+# that a 3-sample median cannot distinguish from the distribution. They do NOT
+# help with host variance: steal differed by sd 0.31 within a provisioning and
+# 15.52 between provisionings, so every rep here samples the same host.
+REPETITIONS_OVERRIDE=""
 USE_SPOT="0"
 # Repetitions that fail are recorded and skipped rather than aborting the
 # scenario; this counts them so the scenario still reports failure at the end.
@@ -37,7 +52,7 @@ declare -a BENCHMARK_NAMES=()
 
 usage() {
   cat >&2 <<USAGE
-usage: $0 --tofu-dir PATH --scenario-name NAME --benchmark-dir PATH --run-id ID [--local-log-dir PATH] [--os-tuning standard|network-throughput] [--instance-affinity none|co-located|different-host] [--access-mode public|private] [--server-region REGION] [--placement-mode MODE] [--benchmark NAME] [--busy-poll 0|1] [--rps-cpus HEXMASK] [--sockperf-buffer-size BYTES]
+usage: $0 --tofu-dir PATH --scenario-name NAME --benchmark-dir PATH --run-id ID [--local-log-dir PATH] [--os-tuning standard|network-throughput] [--instance-affinity none|co-located|different-host] [--access-mode public|private] [--server-region REGION] [--placement-mode MODE] [--benchmark NAME] [--busy-poll 0|1] [--rps-cpus HEXMASK] [--sockperf-buffer-size BYTES] [--repetitions N]
 USAGE
 }
 
@@ -54,6 +69,7 @@ while [[ $# -gt 0 ]]; do
     --busy-poll) BUSY_POLL="$2"; shift 2 ;;
     --rps-cpus) RPS_CPUS="$2"; shift 2 ;;
     --sockperf-buffer-size) SOCKPERF_BUFFER_SIZE="$2"; shift 2 ;;
+    --repetitions) REPETITIONS_OVERRIDE="$2"; shift 2 ;;
     --use-spot) USE_SPOT="$2"; shift 2 ;;
     --collect-telemetry) COLLECT_TELEMETRY="$2"; shift 2 ;;
     --telemetry-interval-sec) TELEMETRY_INTERVAL_SEC="$2"; shift 2 ;;
@@ -100,6 +116,9 @@ if [[ -n "$RPS_CPUS" ]]; then
 fi
 if [[ -n "$SOCKPERF_BUFFER_SIZE" ]]; then
   [[ "$SOCKPERF_BUFFER_SIZE" =~ ^[0-9]+$ ]] || die "--sockperf-buffer-size must be a byte count"
+fi
+if [[ -n "$REPETITIONS_OVERRIDE" ]]; then
+  [[ "$REPETITIONS_OVERRIDE" =~ ^[1-9][0-9]*$ ]] || die "--repetitions must be a positive integer"
 fi
 case "$USE_SPOT" in
   0|1) ;;
@@ -789,6 +808,10 @@ for benchmark_file in "${benchmark_files[@]}"; do
   # that sets neither behaves exactly as it did before.
   # shellcheck disable=SC1090
   source "$benchmark_file"
+  # After the source, so the file's value is replaced rather than pre-empted.
+  if [[ -n "$REPETITIONS_OVERRIDE" ]]; then
+    REPETITIONS="$REPETITIONS_OVERRIDE"
+  fi
   validate_common_benchmark
 
   if ! selected_benchmark "$BENCHMARK_NAME"; then
