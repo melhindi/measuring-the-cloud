@@ -1,7 +1,7 @@
 # The TCP-vs-UDP latency study, STACKIT arm. See the AWS folder's common.inc for
 # why this is a separate folder and why names carry a _ladder suffix.
 #
-# Two scenarios rather than three: the STACKIT module has no server_region
+# Two placement points rather than three: the STACKIT module has no server_region
 # variable and STACKIT exposes one region here, so the cross-region point of the
 # placement axis does not exist for this provider. That is a property of the
 # provider, not a gap in the study -- the analysis must compare STACKIT against

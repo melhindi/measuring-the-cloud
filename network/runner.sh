@@ -91,7 +91,7 @@ run_scenario() {
   scenario_file="$(abs_path "$scenario_file")"
   require_file "$scenario_file"
 
-  unset SCENARIO_NAME PROVIDER TOFU_DIR TFVARS_FILE BENCHMARK_DIR PLACEMENT_MODE OS_TUNING INSTANCE_AFFINITY CLIENT_MACHINE_TYPE SERVER_MACHINE_TYPE CLIENT_AVAILABILITY_ZONE SERVER_AVAILABILITY_ZONE CLIENT_REGION SERVER_REGION ENABLE_TIER1_NETWORKING CPU_IDLE_PINNING USE_SPOT SKIP SKIP_REASON
+  unset SCENARIO_NAME PROVIDER TOFU_DIR TFVARS_FILE BENCHMARK_DIR PLACEMENT_MODE OS_TUNING INSTANCE_AFFINITY CLIENT_MACHINE_TYPE SERVER_MACHINE_TYPE CLIENT_AVAILABILITY_ZONE SERVER_AVAILABILITY_ZONE CLIENT_REGION SERVER_REGION ENABLE_TIER1_NETWORKING CPU_IDLE_PINNING BUSY_POLL RPS_CPUS USE_SPOT SKIP SKIP_REASON
   # shellcheck disable=SC1090
   source "$scenario_file"
 
@@ -148,6 +148,20 @@ run_scenario() {
     0|1) ;;
     *) die "${scenario_file}: CPU_IDLE_PINNING must be 0 or 1" ;;
   esac
+  # Receive-path knobs, orthogonal to OS_TUNING for the same reason as above:
+  # network-throughput changes six things at once, so a knob folded into it
+  # cannot be attributed. Off by default, so every existing scenario keeps its
+  # current treatment and stays comparable with what has already been measured.
+  BUSY_POLL="${BUSY_POLL:-0}"
+  case "$BUSY_POLL" in
+    0|1) ;;
+    *) die "${scenario_file}: BUSY_POLL must be 0 or 1" ;;
+  esac
+  RPS_CPUS="${RPS_CPUS:-}"
+  if [[ -n "$RPS_CPUS" ]]; then
+    [[ "$RPS_CPUS" =~ ^[0-9a-fA-F]+(,[0-9a-fA-F]+)*$ ]] \
+      || die "${scenario_file}: RPS_CPUS must be a hex CPU mask, e.g. 1 or 0000ffff"
+  fi
   # Off by default and AWS-only: spot is implemented for the AWS module, and
   # STACKIT has no spot market at all. Rejected rather than ignored elsewhere.
   USE_SPOT="${USE_SPOT:-0}"
@@ -196,6 +210,8 @@ run_scenario() {
     echo "  os_tuning=${OS_TUNING}"
     echo "  instance_affinity=${INSTANCE_AFFINITY}"
     echo "  cpu_idle_pinning=${CPU_IDLE_PINNING}"
+    echo "  busy_poll=${BUSY_POLL}"
+    echo "  rps_cpus=${RPS_CPUS:-}"
     echo "  use_spot=${USE_SPOT}"
     [[ -n "$CLIENT_MACHINE_TYPE" ]] && echo "  client_machine_type=${CLIENT_MACHINE_TYPE}"
     [[ -n "$SERVER_MACHINE_TYPE" ]] && echo "  server_machine_type=${SERVER_MACHINE_TYPE}"
@@ -291,6 +307,8 @@ run_scenario() {
       --os-tuning "$OS_TUNING" \
       --instance-affinity "$INSTANCE_AFFINITY" \
       --cpu-idle-pinning "$CPU_IDLE_PINNING" \
+      --busy-poll "$BUSY_POLL" \
+      ${RPS_CPUS:+--rps-cpus "$RPS_CPUS"} \
       --use-spot "$USE_SPOT" \
       --collect-telemetry "$COLLECT_TELEMETRY" \
       --access-mode "$ACCESS_MODE" \

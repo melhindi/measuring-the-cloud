@@ -253,6 +253,22 @@ scenario_common_row <- function(run_id, scenario_name, scenario_env) {
     tuning_qdisc = env_get(scenario_env, "NODE_OS_TUNING_QDISC"),
     tuning_rmem_max = to_num(env_get(scenario_env, "NODE_OS_TUNING_RMEM_MAX")),
     tuning_netdev_max_backlog = to_num(env_get(scenario_env, "NODE_OS_TUNING_NETDEV_BACKLOG")),
+    # How many packets one NAPI poll may drain before yielding the CPU. The
+    # network-throughput profile raises it 300 -> 1000 but never recorded the
+    # result, so runs before this column existed read NA and cannot be used to
+    # check whether the value took. Paired with the softnet_stat time_squeeze
+    # counter, this is the difference between "NAPI ran out of budget" as a
+    # measurement and as an inference from the shape of a latency curve.
+    tuning_netdev_budget = to_num(env_get(scenario_env, "NODE_OS_TUNING_NETDEV_BUDGET")),
+    # Requested versus effective, kept apart deliberately. rps_cpus is normalised
+    # by the kernel and a write to a single-queue virtio NIC can succeed and
+    # still steer nothing, so the mask asked for is not evidence of the mask in
+    # force -- group by the effective one.
+    busy_poll_requested = env_get(scenario_env, "BUSY_POLL"),
+    tuning_busy_poll_usec = to_num(env_get(scenario_env, "NODE_OS_TUNING_BUSY_POLL")),
+    tuning_busy_read_usec = to_num(env_get(scenario_env, "NODE_OS_TUNING_BUSY_READ")),
+    rps_cpus_requested = env_get(scenario_env, "NODE_OS_TUNING_RPS_CPUS_REQUESTED"),
+    rps_cpus_effective = env_get(scenario_env, "NODE_OS_TUNING_RPS_CPUS_EFFECTIVE"),
     cpu_idle_pinning_requested = env_get(scenario_env, "CPU_IDLE_PINNING"),
     cpu_idle_pinning_supported = env_get(scenario_env, "NODE_CPU_IDLE_PINNING_SUPPORTED"),
     cpu_idle_pinning_verified = env_get(scenario_env, "NODE_CPU_IDLE_PINNING_VERIFIED"),
@@ -283,6 +299,10 @@ scenario_common_row <- function(run_id, scenario_name, scenario_env) {
     server_cpu_idle_deep_entries_delta = to_num(env_get(scenario_env, "SERVER_NODE_CPU_IDLE_DEEP_ENTRIES_DELTA")),
     server_cpufreq_driver = env_get(scenario_env, "SERVER_NODE_CPUFREQ_DRIVER"),
     server_cpufreq_governor = env_get(scenario_env, "SERVER_NODE_CPUFREQ_GOVERNOR"),
+    server_tuning_congestion_control = env_get(scenario_env, "SERVER_NODE_OS_TUNING_CONGESTION_CONTROL"),
+    server_tuning_netdev_budget = to_num(env_get(scenario_env, "SERVER_NODE_OS_TUNING_NETDEV_BUDGET")),
+    server_tuning_busy_poll_usec = to_num(env_get(scenario_env, "SERVER_NODE_OS_TUNING_BUSY_POLL")),
+    server_rps_cpus_effective = env_get(scenario_env, "SERVER_NODE_OS_TUNING_RPS_CPUS_EFFECTIVE"),
     server_kernel_release = env_get(scenario_env, "SERVER_NODE_KERNEL_RELEASE"),
     server_primary_iface_mtu = to_num(env_get(scenario_env, "SERVER_NODE_PRIMARY_IFACE_MTU")),
     # Read from the instance metadata service, so it reports what the instance
@@ -587,7 +607,13 @@ parse_run <- function(repo_root, run_id) {
       # ends differ is visible rather than represented by the client alone.
       read_env_file(file.path(scenario_dir, "cpu-idle-client.env")),
       prefix_env(read_env_file(file.path(scenario_dir, "server", "cpu-idle-server.env")), "SERVER_"),
-      prefix_env(read_env_file(file.path(scenario_dir, "server", "node-facts.env")), "SERVER_")
+      prefix_env(read_env_file(file.path(scenario_dir, "server", "node-facts.env")), "SERVER_"),
+      # fetch_results.sh has always pulled the server os-tuning.env, but nothing
+      # read it, so a pair where only one end accepted a profile looked fully
+      # tuned. That matters most for the receive-path knobs: sockperf under-load
+      # puts a receive path on both ends, so a busy_poll or rps_cpus setting that
+      # took on the client and not on the server is a half-applied treatment.
+      prefix_env(read_env_file(file.path(scenario_dir, "server", "os-tuning.env")), "SERVER_")
     )
     scenario_rows[[length(scenario_rows) + 1]] <- scenario_common_row(run_id, scenario_name, scenario_env)
 
@@ -725,7 +751,9 @@ scenario_cols <- c(
   "client_private_ip", "server_private_ip",
   "client_cpu_list", "server_cpu_list",
   "tuning_congestion_control", "tuning_qdisc",
-  "tuning_rmem_max", "tuning_netdev_max_backlog",
+  "tuning_rmem_max", "tuning_netdev_max_backlog", "tuning_netdev_budget",
+  "busy_poll_requested", "tuning_busy_poll_usec", "tuning_busy_read_usec",
+  "rps_cpus_requested", "rps_cpus_effective",
   "cpu_idle_pinning_requested", "cpu_idle_pinning_supported",
   "cpu_idle_pinning_verified", "cpu_idle_driver", "cpu_idle_states",
   "cpu_idle_deep_entries_delta",
@@ -736,6 +764,8 @@ scenario_cols <- c(
   "server_cpu_idle_pinning_reason", "server_cpu_idle_driver",
   "server_cpu_idle_deep_entries_delta",
   "server_cpufreq_driver", "server_cpufreq_governor",
+  "server_tuning_congestion_control", "server_tuning_netdev_budget",
+  "server_tuning_busy_poll_usec", "server_rps_cpus_effective",
   "server_kernel_release", "server_primary_iface_mtu",
   "use_spot_requested", "purchase_model", "server_purchase_model",
   "kernel_release", "image_id", "primary_iface", "primary_iface_mtu",

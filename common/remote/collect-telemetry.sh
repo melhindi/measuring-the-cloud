@@ -92,6 +92,26 @@ case "$ACTION" in
           printf "# %s\n" "$ts" >>"${out}/ss-udp.log"
           ss -uanm >>"${out}/ss-udp.log" 2>/dev/null
         fi
+        # /proc/net/softnet_stat is the receive path from the kernel side, and
+        # the only direct evidence for whether NAPI is polling or being driven
+        # by interrupts. One whitespace-separated line of hex per CPU, in CPU
+        # order, no header. The columns that matter here:
+        #   1 processed      packets taken off the backlog by this CPU
+        #   2 dropped        dropped because the backlog was full -- this is
+        #                    what netdev_max_backlog raises the ceiling on
+        #   3 time_squeeze   polls that exhausted netdev_budget or their time
+        #                    slice with work still queued. A rising count is
+        #                    NAPI hitting its budget, which is precisely the
+        #                    claim about packet-rate ceilings that this study
+        #                    has so far only been able to infer from the shape
+        #                    of the latency curve.
+        #  10 received_rps   times another CPU was woken to take receive work,
+        #                    so an RPS mask can be confirmed to be steering
+        #                    rather than merely written.
+        # Kept raw. Deltas are the meaningful quantity and belong in analysis,
+        # not in a sampler that must stay cheap enough to run every second.
+        printf "# %s\n" "$ts" >>"${out}/softnet_stat.log"
+        cat /proc/net/softnet_stat >>"${out}/softnet_stat.log" 2>/dev/null
         if command -v nstat >/dev/null 2>&1; then
           printf "# %s\n" "$ts" >>"${out}/nstat.log"
           nstat -az >>"${out}/nstat.log" 2>/dev/null

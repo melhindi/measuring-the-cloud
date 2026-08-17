@@ -12,6 +12,11 @@ RUN_ID=""
 OS_TUNING="standard"
 INSTANCE_AFFINITY="none"
 CPU_IDLE_PINNING="0"
+# Receive-path knobs, orthogonal to OS_TUNING so either can be crossed with a
+# profile rather than replacing it. See common/remote/apply-os-tuning.sh for why
+# they are not profile members.
+BUSY_POLL="0"
+RPS_CPUS=""
 USE_SPOT="0"
 # Repetitions that fail are recorded and skipped rather than aborting the
 # scenario; this counts them so the scenario still reports failure at the end.
@@ -27,7 +32,7 @@ declare -a BENCHMARK_NAMES=()
 
 usage() {
   cat >&2 <<USAGE
-usage: $0 --tofu-dir PATH --scenario-name NAME --benchmark-dir PATH --run-id ID [--local-log-dir PATH] [--os-tuning standard|network-throughput] [--instance-affinity none|co-located|different-host] [--access-mode public|private] [--server-region REGION] [--placement-mode MODE] [--benchmark NAME]
+usage: $0 --tofu-dir PATH --scenario-name NAME --benchmark-dir PATH --run-id ID [--local-log-dir PATH] [--os-tuning standard|network-throughput] [--instance-affinity none|co-located|different-host] [--access-mode public|private] [--server-region REGION] [--placement-mode MODE] [--benchmark NAME] [--busy-poll 0|1] [--rps-cpus HEXMASK]
 USAGE
 }
 
@@ -41,6 +46,8 @@ while [[ $# -gt 0 ]]; do
     --os-tuning) OS_TUNING="$2"; shift 2 ;;
     --instance-affinity) INSTANCE_AFFINITY="$2"; shift 2 ;;
     --cpu-idle-pinning) CPU_IDLE_PINNING="$2"; shift 2 ;;
+    --busy-poll) BUSY_POLL="$2"; shift 2 ;;
+    --rps-cpus) RPS_CPUS="$2"; shift 2 ;;
     --use-spot) USE_SPOT="$2"; shift 2 ;;
     --collect-telemetry) COLLECT_TELEMETRY="$2"; shift 2 ;;
     --telemetry-interval-sec) TELEMETRY_INTERVAL_SEC="$2"; shift 2 ;;
@@ -74,6 +81,17 @@ case "$CPU_IDLE_PINNING" in
   0|1) ;;
   *) die "--cpu-idle-pinning must be 0 or 1" ;;
 esac
+case "$BUSY_POLL" in
+  0|1) ;;
+  *) die "--busy-poll must be 0 or 1" ;;
+esac
+# A CPU mask, as the kernel wants it: lowercase hex, optionally comma-grouped.
+# Validated here rather than on the node because a typo would otherwise be a
+# silently-rejected sysfs write recorded as an ordinary unsupported knob.
+if [[ -n "$RPS_CPUS" ]]; then
+  [[ "$RPS_CPUS" =~ ^[0-9a-fA-F]+(,[0-9a-fA-F]+)*$ ]] \
+    || die "--rps-cpus must be a hex CPU mask, e.g. 1 or 0000ffff or ffffffff,ffffffff"
+fi
 case "$USE_SPOT" in
   0|1) ;;
   *) die "--use-spot must be 0 or 1" ;;
@@ -366,7 +384,7 @@ kill_stale_server() {
 write_remote_metadata() {
   local tmp
   tmp="$(mktemp /tmp/cloud-measuring-scenario.XXXXXX.env)"
-  write_env_file "$tmp" RUN_ID SCENARIO_NAME OS_TUNING INSTANCE_AFFINITY PLACEMENT_GROUP_NAME PLACEMENT_GROUP_STRATEGY ACCESS_MODE CLIENT_PUBLIC_IP SERVER_PUBLIC_IP CLIENT_PRIVATE_IP SERVER_PRIVATE_IP CLIENT_SSH_HOST SERVER_SSH_HOST SSH_USER CLIENT_MACHINE_TYPE SERVER_MACHINE_TYPE CLIENT_AVAILABILITY_ZONE SERVER_AVAILABILITY_ZONE CLIENT_CPU_LIST SERVER_CPU_LIST SERVER_REGION PLACEMENT_MODE CPU_IDLE_PINNING USE_SPOT
+  write_env_file "$tmp" RUN_ID SCENARIO_NAME OS_TUNING INSTANCE_AFFINITY PLACEMENT_GROUP_NAME PLACEMENT_GROUP_STRATEGY ACCESS_MODE CLIENT_PUBLIC_IP SERVER_PUBLIC_IP CLIENT_PRIVATE_IP SERVER_PRIVATE_IP CLIENT_SSH_HOST SERVER_SSH_HOST SSH_USER CLIENT_MACHINE_TYPE SERVER_MACHINE_TYPE CLIENT_AVAILABILITY_ZONE SERVER_AVAILABILITY_ZONE CLIENT_CPU_LIST SERVER_CPU_LIST SERVER_REGION PLACEMENT_MODE CPU_IDLE_PINNING BUSY_POLL RPS_CPUS USE_SPOT
   scp_to "$tmp" "$CLIENT_SSH_HOST" "${REMOTE_SCENARIO_DIR}/scenario.env"
   scp_to "$tmp" "$SERVER_SSH_HOST" "${REMOTE_SCENARIO_DIR}/scenario.env"
   rm -f "$tmp"
@@ -395,7 +413,7 @@ apply_os_tuning() {
   log "applying OS tuning profile '${OS_TUNING}' on ${label}"
   # The tuning script is shipped by push_remote_scripts, not baked into the
   # image, so this must run after it.
-  ssh_run "$host" "mkdir -p '${REMOTE_SCENARIO_DIR}' && sudo '${REMOTE_BIN_DIR}/apply-os-tuning.sh' '${OS_TUNING}' --facts-out '${REMOTE_SCENARIO_DIR}/os-tuning.env' >'${REMOTE_SCENARIO_DIR}/os-tuning.log' 2>&1"
+  ssh_run "$host" "mkdir -p '${REMOTE_SCENARIO_DIR}' && sudo '${REMOTE_BIN_DIR}/apply-os-tuning.sh' '${OS_TUNING}' --facts-out '${REMOTE_SCENARIO_DIR}/os-tuning.env' --busy-poll '${BUSY_POLL}' --rps-cpus '${RPS_CPUS}' >'${REMOTE_SCENARIO_DIR}/os-tuning.log' 2>&1"
 }
 
 push_remote_scripts() {
