@@ -138,6 +138,27 @@ for (tbl in c("scenarios", "iperf3", "iperf3_intervals", "sockperf")) {
   ))
 }
 
+# network_cpu.csv is written by build_cpu_csv.R, which is a separate step from
+# build_csv.R and predates no result directory -- so absence is normal and
+# tolerated. When present it carries %steal on the benchmark core, which on
+# STACKIT decides whether a latency row is a network measurement at all.
+cpu_csv <- file.path(results_dir, "network_cpu.csv")
+DBI::dbExecute(con, "drop table if exists cpu_all")
+if (file.exists(cpu_csv)) {
+  DBI::dbExecute(con, sprintf("create table cpu_all as select * from read_csv_auto('%s')", csv_sql_path("network_cpu.csv")))
+} else {
+  DBI::dbExecute(con, "create table cpu_all (run_id varchar, scenario_name varchar, benchmark_name varchar, repetition double, role varchar, cpu double, steal_pct double, steal_pct_max double, softirq_pct double, idle_pct double)")
+}
+# Worst-end steal per repetition: either host being descheduled stalls the round
+# trip, so the max across the pair is the figure that governs, not the mean.
+DBI::dbExecute(con, "drop view if exists rep_steal")
+DBI::dbExecute(con, "
+create view rep_steal as
+select run_id, scenario_name, benchmark_name, repetition,
+       max(steal_pct) as worst_steal_pct
+from cpu_all where cpu = 1
+group by 1, 2, 3, 4")
+
 # network_failures.csv is written by build_csv.R alongside the measurement
 # tables. Older result directories predate it, so its absence is tolerated.
 failures_csv <- file.path(results_dir, "network_failures.csv")
@@ -178,6 +199,10 @@ default_report_config <- list(
   # Two arms only compare if they ran at the same *achieved* load. Equal
   # offered rate is not equal load once either arm misses its target.
   ul_max_rate_gap_pct = 2,
+  # Reject a repetition whose benchmark-core steal on either host exceeds this.
+  # Reported rather than applied: see the contention section for why silently
+  # filtering every figure is a decision and not a default.
+  max_steal_pct = 5,
   # A percentile needs samples behind it. p99.9 estimated from a handful of
   # observations is noise with a precise-looking name.
   ul_min_tail_samples = 100,
@@ -218,6 +243,7 @@ ref_placement <- cfg("instance_comparison_placement_class")
 ul_min_delivered <- cfg("ul_min_delivered_pct")
 ul_max_rate_gap <- cfg("ul_max_rate_gap_pct")
 ul_min_tail_samples <- cfg("ul_min_tail_samples")
+max_steal <- cfg("max_steal_pct")
 ref_tcp_length_bytes <- cfg("reference_tcp_length_bytes")
 ref_udp_length_bytes <- cfg("reference_udp_length_bytes")
 ref_udp_target_gbps <- cfg("reference_udp_target_gbps")
@@ -436,6 +462,73 @@ if (!is.null(params$note) && nzchar(params$note)) {
 # Data Coverage
 
 The main analysis uses one row per benchmark repetition. iperf3 interval rows are kept for diagnostics only and are not treated as independent benchmark repetitions.
+
+## Hypervisor Contention
+
+Every figure in this report should be read against this table first, for STACKIT
+rows especially. `%steal` is time the guest was runnable but the hypervisor gave
+the physical core to someone else. `sockperf under-load` has the server echo
+every message, so a descheduled vCPU on either host sits inside the round-trip
+time being reported -- a contended run and a genuine transport effect look
+identical in a latency percentile.
+
+This is reported, not applied as a filter. Excluding rows would change every
+figure below, including ones already published, so the threshold is surfaced and
+the decision left explicit.
+
+```{r contention-steal, echo=FALSE}
+steal_summary <- DBI::dbGetQuery(con, sprintf("
+  select s.provider,
+         cpu.role,
+         count(*)                                       as cpu_rows,
+         round(avg(cpu.steal_pct), 1)                   as steal_pct_mean,
+         round(max(cpu.steal_pct_max), 1)               as steal_pct_peak,
+         round(100.0 * avg(case when cpu.steal_pct > %f then 1 else 0 end), 0)
+                                                        as pct_rows_over_threshold
+  from cpu_all cpu
+  join (select distinct run_id, scenario_name, provider from scenarios_all) s
+    on s.run_id = cpu.run_id and s.scenario_name = cpu.scenario_name
+  where cpu.cpu = 1 and s.provider is not null
+  group by 1, 2
+  order by steal_pct_mean desc", max_steal))
+
+if (nrow(steal_summary) == 0) {
+  cat("No CPU telemetry in this result set. Run build_cpu_csv.R to populate it;",
+      "without it, contention cannot be ruled out for any row above.\n")
+} else {
+  kable(steal_summary, caption = sprintf(
+    "CPU steal on the benchmark core (CPU 1). Threshold for the last column: %g%%. A provider at 0%% is uncontended; rows well above the threshold are measuring the hypervisor rather than the network.",
+    max_steal))
+}
+```
+
+```{r contention-effect, echo=FALSE}
+steal_effect <- DBI::dbGetQuery(con, "
+  select sp.provider,
+         case when r.worst_steal_pct < 3  then '1: under 3%'
+              when r.worst_steal_pct < 10 then '2: 3-10%'
+              when r.worst_steal_pct < 25 then '3: 10-25%'
+              else '4: over 25%' end                    as steal_band,
+         count(*)                                       as reps,
+         round(avg(r.worst_steal_pct), 1)               as worst_steal_pct,
+         round(avg(sp.received_messages / nullif(sp.valid_duration_sec, 0))) as delivered_mps,
+         round(avg(sp.p50_rtt_us))                      as p50_rtt_us
+  from sockperf sp
+  join rep_steal r
+    on  r.run_id         = sp.run_id
+    and r.scenario_name  = sp.scenario_name
+    and r.benchmark_name = sp.benchmark_name
+    and r.repetition     = sp.repetition
+  where sp.mode = 'ul' and sp.offered_mps >= 50000 and sp.provider is not null
+  group by 1, 2
+  order by 1, 2")
+
+if (nrow(steal_effect) == 0) {
+  cat("No high-rate under-load rows joined to CPU telemetry in this result set.\n")
+} else {
+  kable(steal_effect, caption = "Delivered rate and p50 by steal band, under-load rungs at 50k msg/s and above. A delivered rate that falls as the band rises means those rungs measure contention, not the network.")
+}
+```
 
 ```{r filter-policy, echo=FALSE}
 filter_policy <- data.frame(

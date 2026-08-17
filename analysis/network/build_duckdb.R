@@ -15,6 +15,8 @@
 #   network_latency            one row per sockperf repetition
 #   network_capacity           one row per iperf3 repetition
 #   network_capacity_intervals per-second samples inside an iperf3 run
+#   network_softnet            per-CPU receive-path counters per repetition
+#   network_cpu                per-CPU utilisation and steal per repetition
 #
 # Derived columns are the point of this file. Three quantities were repeatedly
 # got wrong while analysing this data by hand, so they are computed once here
@@ -92,6 +94,41 @@ create table network_capacity_intervals as
 select * exclude (source_file)
 from read_csv_auto('%s', header = true)
 ", csv("network_iperf3_intervals.csv"))))
+
+# Telemetry, at a different grain from everything above: one row per CPU per
+# repetition rather than one per repetition. Optional, because it exists only
+# for runs made after softnet_stat collection was added and only when telemetry
+# was enabled. Join on (run_id, scenario_name, benchmark_name, repetition).
+softnet_csv <- file.path(in_dir, "network_softnet.csv")
+if (file.exists(softnet_csv)) {
+  invisible(dbExecute(con, sprintf("
+create table network_softnet as
+select *,
+  -- time_squeeze is the counter that tests whether NAPI is exhausting its
+  -- budget. Normalised per million packets so a rate ladder can be read down
+  -- the column: the raw count rises with offered load whether or not anything
+  -- is wrong, which makes the absolute number unusable for comparing rungs.
+  1e6 * try_cast(time_squeeze_delta as double)
+    / nullif(try_cast(processed_delta as double), 0)          as squeeze_per_mpkt,
+  1e6 * try_cast(dropped_delta as double)
+    / nullif(try_cast(processed_delta as double), 0)          as backlog_drops_per_mpkt
+from read_csv_auto('%s', header = true)
+", gsub("'", "''", softnet_csv, fixed = TRUE))))
+}
+
+# CPU state per repetition. Same grain as network_softnet and, on STACKIT, the
+# table that decides whether a row is worth reading at all: steal_pct on the
+# benchmark core correlated at r = -0.97 with delivered message rate across the
+# STACKIT 100k rungs, which is a stronger predictor than any treatment in the
+# study. AWS and GCP measured 0.0% throughout, so this only bites for one
+# provider -- but it bites hard enough there to have inverted a conclusion.
+cpu_csv <- file.path(in_dir, "network_cpu.csv")
+if (file.exists(cpu_csv)) {
+  invisible(dbExecute(con, sprintf("
+create table network_cpu as
+select * from read_csv_auto('%s', header = true)
+", gsub("'", "''", cpu_csv, fixed = TRUE))))
+}
 
 failures_csv <- file.path(in_dir, "network_failures.csv")
 if (file.exists(failures_csv)) {
