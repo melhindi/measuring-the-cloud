@@ -17,6 +17,12 @@
 #   network_capacity_intervals per-second samples inside an iperf3 run
 #   network_softnet            per-CPU receive-path counters per repetition
 #   network_cpu                per-CPU utilisation and steal per repetition
+#
+# network_latency and network_capacity each carry worst_steal_pct, joined from
+# network_cpu at build time. Steal is a property of the measurement, so it
+# belongs on the measurement row: on STACKIT it correlated at r = -0.97 with
+# delivered rate, a stronger predictor than any treatment in this study, while
+# AWS and GCP measured 0.0% throughout.
 #   network_socket             effective socket buffer and drops per repetition
 #
 # Derived columns are the point of this file. Three quantities were repeatedly
@@ -47,7 +53,9 @@ in_dir <- file.path(repo_root, "analysis", "network", result_id)
 if (!dir.exists(in_dir)) stop(sprintf("no such result directory: %s", in_dir))
 
 out_path <- if (length(args) >= 2) args[[2]] else file.path(in_dir, "network_benchmarks.duckdb")
-if (file.exists(out_path)) file.remove(out_path)
+# invisible(): file.remove() returns a visible TRUE, which an if at top level
+# prints, so every rebuild emitted a stray [1] TRUE above the table counts.
+if (file.exists(out_path)) invisible(file.remove(out_path))
 
 csv <- function(name) {
   p <- file.path(in_dir, name)
@@ -58,13 +66,45 @@ csv <- function(name) {
 con <- dbConnect(duckdb::duckdb(), out_path)
 on.exit(dbDisconnect(con, shutdown = TRUE), add = TRUE)
 
+# CPU state has to be loaded before the measurement tables, because they carry a
+# steal column derived from it.
+#
+# Always created, empty if the CSV is absent. A missing table would make every
+# query below fail to bind; an empty one lets them run and report NULL steal,
+# which is the honest answer for a run with no telemetry. Absence is normal --
+# build_cpu_csv.R is a separate step and COLLECT_TELEMETRY can be off.
+cpu_csv <- file.path(in_dir, "network_cpu.csv")
+if (file.exists(cpu_csv)) {
+  invisible(dbExecute(con, sprintf("
+create table network_cpu as select * from read_csv_auto('%s', header = true)
+", gsub("'", "''", cpu_csv, fixed = TRUE))))
+} else {
+  invisible(dbExecute(con, "
+create table network_cpu (
+  run_id varchar, scenario_name varchar, benchmark_name varchar,
+  repetition bigint, role varchar, cpu bigint, samples bigint,
+  usr_pct double, sys_pct double, irq_pct double, softirq_pct double,
+  steal_pct double, steal_pct_max double, idle_pct double)"))
+}
+
+# Worst-end steal per repetition: the max across the pair, because either host
+# being descheduled stalls the round trip. CPU 1 is the benchmark core --
+# remote_cpu_list() pins benchmarks to 1..n-1 and leaves CPU 0 for the samplers.
+invisible(dbExecute(con, "
+create view rep_steal as
+select run_id, scenario_name, benchmark_name, repetition,
+       max(steal_pct)     as worst_steal_pct,
+       max(steal_pct_max) as peak_steal_pct
+from network_cpu where cpu = 1
+group by 1, 2, 3, 4"))
+
 # TRY_CAST throughout: a column is typed by read_csv_auto from the data present,
 # so one that is empty in this result set arrives as VARCHAR and would abort the
 # arithmetic. TRY_CAST yields NULL instead, which is the honest answer.
 invisible(dbExecute(con, sprintf("
 create table network_latency as
 select
-  * exclude (client_private_ip, server_private_ip, target_ip, source_file),
+  sp.* exclude (client_private_ip, server_private_ip, target_ip, source_file),
   -- see the header: delivered, not sent
   try_cast(received_messages as double)
     / nullif(try_cast(valid_duration_sec as double), 0)            as delivered_mps,
@@ -74,20 +114,43 @@ select
   2 * try_cast(received_messages as double)
     / nullif(try_cast(valid_duration_sec as double), 0)            as packets_per_sec,
   try_cast(p99_rtt_us as double)
-    / nullif(try_cast(p50_rtt_us as double), 0)                    as tail_ratio_p99_p50
-from read_csv_auto('%s', header = true)
+    / nullif(try_cast(p50_rtt_us as double), 0)                    as tail_ratio_p99_p50,
+  -- Steal travels WITH the measurement rather than sitting in a separate table
+  -- nobody joins. A tail percentile and the contention that may have caused it
+  -- have to be visible in the same row, or a reader has no way to tell a
+  -- transport effect from a descheduled vCPU -- which is exactly how a busy_poll
+  -- arm was briefly credited with a 4x improvement that was entirely its
+  -- control sitting at 31 percent steal against the treatment's 0.7.
+  --
+  -- LEFT JOIN, so a run without CPU telemetry keeps its measurement rows with a
+  -- NULL steal. An inner join would silently drop every row of every older run.
+  st.worst_steal_pct,
+  st.peak_steal_pct
+from read_csv_auto('%s', header = true) sp
+left join rep_steal st
+  on  st.run_id         = sp.run_id
+  and st.scenario_name  = sp.scenario_name
+  and st.benchmark_name = sp.benchmark_name
+  and st.repetition     = sp.repetition
 ", csv("network_sockperf.csv"))))
 
 invisible(dbExecute(con, sprintf("
 create table network_capacity as
 select
-  * exclude (client_ip, server_ip, source_file),
+  ip.* exclude (client_ip, server_ip, source_file),
   -- iperf3 is one-way, so this is packets on the wire in the sending direction
   try_cast(receiver_mbit_per_sec as double) * 1e6
     / nullif(8.0 * try_cast(udp_length_bytes as double), 0)        as approx_packets_per_sec,
   100.0 * try_cast(receiver_mbit_per_sec as double)
-    / nullif(try_cast(udp_target_bitrate_gbit_per_sec as double) * 1000.0, 0) as delivered_pct_of_target
-from read_csv_auto('%s', header = true)
+    / nullif(try_cast(udp_target_bitrate_gbit_per_sec as double) * 1000.0, 0) as delivered_pct_of_target,
+  st.worst_steal_pct,
+  st.peak_steal_pct
+from read_csv_auto('%s', header = true) ip
+left join rep_steal st
+  on  st.run_id         = ip.run_id
+  and st.scenario_name  = ip.scenario_name
+  and st.benchmark_name = ip.benchmark_name
+  and st.repetition     = ip.repetition
 ", csv("network_iperf3.csv"))))
 
 invisible(dbExecute(con, sprintf("
@@ -115,20 +178,6 @@ select *,
     / nullif(try_cast(processed_delta as double), 0)          as backlog_drops_per_mpkt
 from read_csv_auto('%s', header = true)
 ", gsub("'", "''", softnet_csv, fixed = TRUE))))
-}
-
-# CPU state per repetition. Same grain as network_softnet and, on STACKIT, the
-# table that decides whether a row is worth reading at all: steal_pct on the
-# benchmark core correlated at r = -0.97 with delivered message rate across the
-# STACKIT 100k rungs, which is a stronger predictor than any treatment in the
-# study. AWS and GCP measured 0.0% throughout, so this only bites for one
-# provider -- but it bites hard enough there to have inverted a conclusion.
-cpu_csv <- file.path(in_dir, "network_cpu.csv")
-if (file.exists(cpu_csv)) {
-  invisible(dbExecute(con, sprintf("
-create table network_cpu as
-select * from read_csv_auto('%s', header = true)
-", gsub("'", "''", cpu_csv, fixed = TRUE))))
 }
 
 # The sockperf socket's effective buffer and drops. This is what makes a buffer

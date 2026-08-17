@@ -277,7 +277,6 @@ scenario_common_row <- function(run_id, scenario_name, scenario_env) {
     cpu_idle_pinning_supported = env_get(scenario_env, "NODE_CPU_IDLE_PINNING_SUPPORTED"),
     cpu_idle_pinning_verified = env_get(scenario_env, "NODE_CPU_IDLE_PINNING_VERIFIED"),
     cpu_idle_driver = env_get(scenario_env, "NODE_CPU_IDLE_DRIVER"),
-    cpu_idle_states = env_get(scenario_env, "NODE_CPU_IDLE_STATES"),
     cpu_idle_deep_entries_delta = to_num(env_get(scenario_env, "NODE_CPU_IDLE_DEEP_ENTRIES_DELTA")),
     # cpufreq is a separate subsystem from the cpu_idle_* fields above: it
     # governs frequency while executing, not what an idle core does. A
@@ -286,12 +285,6 @@ scenario_common_row <- function(run_id, scenario_name, scenario_env) {
     # exposes no frequency control at all, which is the common cloud case and is
     # distinct from NA, which means the run predates this field.
     cpufreq_driver = env_get(scenario_env, "NODE_CPUFREQ_DRIVER"),
-    cpufreq_governor = env_get(scenario_env, "NODE_CPUFREQ_GOVERNOR"),
-    cpufreq_available_governors = env_get(scenario_env, "NODE_CPUFREQ_AVAILABLE_GOVERNORS"),
-    cpufreq_governor_uniform = env_get(scenario_env, "NODE_CPUFREQ_GOVERNOR_UNIFORM"),
-    cpufreq_cur_freq_khz = to_num(env_get(scenario_env, "NODE_CPUFREQ_CUR_FREQ_KHZ")),
-    cpufreq_min_freq_khz = to_num(env_get(scenario_env, "NODE_CPUFREQ_MIN_FREQ_KHZ")),
-    cpufreq_max_freq_khz = to_num(env_get(scenario_env, "NODE_CPUFREQ_MAX_FREQ_KHZ")),
     # Server-side counterparts. A pair where the client could pin and the server
     # could not is not a pinned measurement, and without these it would read as
     # one. MTU is here for the same reason: an asymmetric path is a real effect
@@ -302,7 +295,6 @@ scenario_common_row <- function(run_id, scenario_name, scenario_env) {
     server_cpu_idle_driver = env_get(scenario_env, "SERVER_NODE_CPU_IDLE_DRIVER"),
     server_cpu_idle_deep_entries_delta = to_num(env_get(scenario_env, "SERVER_NODE_CPU_IDLE_DEEP_ENTRIES_DELTA")),
     server_cpufreq_driver = env_get(scenario_env, "SERVER_NODE_CPUFREQ_DRIVER"),
-    server_cpufreq_governor = env_get(scenario_env, "SERVER_NODE_CPUFREQ_GOVERNOR"),
     server_tuning_congestion_control = env_get(scenario_env, "SERVER_NODE_OS_TUNING_CONGESTION_CONTROL"),
     server_tuning_netdev_budget = to_num(env_get(scenario_env, "SERVER_NODE_OS_TUNING_NETDEV_BUDGET")),
     server_tuning_busy_poll_usec = to_num(env_get(scenario_env, "SERVER_NODE_OS_TUNING_BUSY_POLL")),
@@ -468,9 +460,14 @@ parse_iperf3_intervals <- function(run_id, scenario_name, scenario_env, benchmar
         bytes = to_num(get_path(sum, c("bytes"), NA_real_)),
         packets = to_num(get_path(sum, c("packets"), NA_real_)),
         retransmits = to_num(get_path(sum, c("retransmits"), NA_real_)),
-        jitter_ms = to_num(get_path(sum, c("jitter_ms"), NA_real_)),
-        lost_packets = to_num(get_path(sum, c("lost_packets"), NA_real_)),
-        lost_percent = to_num(get_path(sum, c("lost_percent"), NA_real_)),
+        # No jitter_ms / lost_packets / lost_percent here. iperf3 emits UDP loss
+        # and jitter only in the end summary, never in an interval record --
+        # verified against a UDP capacity run, whose interval streams carry
+        # bits_per_second, bytes, packets, seconds, omitted, socket and sender
+        # and nothing else. The per-repetition table gets them from end.sum,
+        # which is where lost_percent in network_iperf3 comes from. Asking for
+        # them at interval grain produced three permanently empty columns across
+        # 19,708 rows.
         stringsAsFactors = FALSE
       )
     )
@@ -760,15 +757,25 @@ scenario_cols <- c(
   "busy_poll_requested", "tuning_busy_poll_usec", "tuning_busy_read_usec",
   "rps_cpus_requested", "rps_cpus_effective",
   "cpu_idle_pinning_requested", "cpu_idle_pinning_supported",
-  "cpu_idle_pinning_verified", "cpu_idle_driver", "cpu_idle_states",
+  "cpu_idle_pinning_verified", "cpu_idle_driver",
   "cpu_idle_deep_entries_delta",
-  "cpufreq_driver", "cpufreq_governor", "cpufreq_available_governors",
-  "cpufreq_governor_uniform", "cpufreq_cur_freq_khz",
-  "cpufreq_min_freq_khz", "cpufreq_max_freq_khz",
+  # cpufreq_driver and cpu_idle_driver are kept because they carry the finding:
+  # both read "none" on every instance measured so far, meaning the guest
+  # exposes no cpufreq/cpuidle subsystem at all. The detail columns that used to
+  # sit here -- cpufreq_governor, available_governors, governor_uniform,
+  # cur/min/max_freq_khz, cpu_idle_states, server_cpufreq_governor -- were
+  # therefore empty in all 59 scenarios, and redundant with the driver column
+  # while it says "none".
+  #
+  # collect-node-facts.sh still probes and emits them, so restoring any is one
+  # env_get line here plus its name in this vector. That matters if a bare-metal
+  # or cpufreq-exposing instance type is ever measured, where the governor is
+  # exactly the variable a latency study would want.
+  "cpufreq_driver",
   "server_cpu_idle_pinning_supported", "server_cpu_idle_pinning_verified",
   "server_cpu_idle_pinning_reason", "server_cpu_idle_driver",
   "server_cpu_idle_deep_entries_delta",
-  "server_cpufreq_driver", "server_cpufreq_governor",
+  "server_cpufreq_driver",
   "server_tuning_congestion_control", "server_tuning_netdev_budget",
   "server_tuning_busy_poll_usec", "server_rps_cpus_effective",
   "server_kernel_release", "server_primary_iface_mtu",
@@ -806,8 +813,7 @@ iperf3_interval_cols <- c(
   measurement_prefix_cols,
   "protocol", "interval_index", "interval_start_sec", "interval_end_sec",
   "interval_seconds", "omitted", "perspective",
-  "bits_per_second", "mbit_per_sec", "bytes", "packets", "retransmits",
-  "jitter_ms", "lost_packets", "lost_percent"
+  "bits_per_second", "mbit_per_sec", "bytes", "packets", "retransmits"
 )
 
 sockperf_cols <- c(

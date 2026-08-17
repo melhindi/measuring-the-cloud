@@ -40,9 +40,17 @@ dbExecute(con, sprintf("create view iperf3 as select * from read_csv_auto('%s')"
 dbExecute(con, sprintf("create view iperf3_intervals as select * from read_csv_auto('%s')", csv_path("network_iperf3_intervals.csv")))
 dbExecute(con, sprintf("create view sockperf as select * from read_csv_auto('%s')", csv_path("network_sockperf.csv")))
 
-raw_iperf3_count <- length(Sys.glob(file.path(repo_root, "artifacts", "network", "run-*", "*", "benchmarks", "*", "rep-*", "client", "iperf3.json")))
-raw_sockperf_count <- length(Sys.glob(file.path(repo_root, "artifacts", "network", "run-*", "*", "benchmarks", "*", "rep-*", "client", "sockperf.log")))
-raw_scenario_count <- length(Sys.glob(file.path(repo_root, "artifacts", "network", "run-*", "*", "scenario.env")))
+# Glob every run directory, not just run-*.
+#
+# These counts exist to catch build_csv.R silently dropping a scenario, and they
+# were matching "run-*" only -- the shape of an auto-generated RUN_ID. Every run
+# launched with an explicit --run-id (stackit-ladder-05, aws-ladder-02, ...) was
+# invisible to the check, so it compared 59 parsed scenarios against 34 on disk
+# and failed; before that, it could equally have passed while ignoring most of
+# the dataset. build_csv.R enumerates all run directories, so this must too.
+raw_iperf3_count <- length(Sys.glob(file.path(repo_root, "artifacts", "network", "*", "*", "benchmarks", "*", "rep-*", "client", "iperf3.json")))
+raw_sockperf_count <- length(Sys.glob(file.path(repo_root, "artifacts", "network", "*", "*", "benchmarks", "*", "rep-*", "client", "sockperf.log")))
+raw_scenario_count <- length(Sys.glob(file.path(repo_root, "artifacts", "network", "*", "*", "scenario.env")))
 
 csv_counts <- dbGetQuery(con, "
 select

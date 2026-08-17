@@ -98,16 +98,22 @@ ensure_numeric_columns("iperf3_all", c(
   "server_port", "timestamp_epoch"
 ))
 
+# No jitter_ms / lost_packets / lost_percent: iperf3 reports UDP loss and jitter
+# only in its end summary, never per interval, so those columns were dropped from
+# the interval table. They remain on iperf3_all, which is where the end summary
+# lands and where the UDP loss sections read them from.
 ensure_numeric_columns("iperf3_intervals_all", c(
   "interval_index", "interval_start_sec", "interval_end_sec",
   "interval_seconds",
-  "bits_per_second", "mbit_per_sec", "bytes", "packets", "retransmits",
-  "jitter_ms", "lost_packets", "lost_percent"
+  "bits_per_second", "mbit_per_sec", "bytes", "packets", "retransmits"
 ))
+# The cpufreq frequency columns are gone from the schema: every instance measured
+# so far reports cpufreq_driver = "none", meaning the guest exposes no cpufreq
+# subsystem, so governor and cur/min/max frequency were empty in all 59
+# scenarios. cpufreq_driver is kept, because "none" is the finding.
 numeric_scenario_cols <- c(
   "primary_iface_mtu", "cpu_idle_deep_entries_delta",
-  "tuning_rmem_max", "tuning_netdev_max_backlog",
-  "cpufreq_cur_freq_khz", "cpufreq_min_freq_khz", "cpufreq_max_freq_khz",
+  "tuning_rmem_max", "tuning_netdev_max_backlog", "tuning_netdev_budget",
   "server_cpu_idle_deep_entries_delta", "server_primary_iface_mtu"
 )
 # The scenario columns are also carried on every measurement row, so the same
