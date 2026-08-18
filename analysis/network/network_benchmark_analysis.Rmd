@@ -478,9 +478,8 @@ every message, so a descheduled vCPU on either host sits inside the round-trip
 time being reported -- a contended run and a genuine transport effect look
 identical in a latency percentile.
 
-This is reported, not applied as a filter. Excluding rows would change every
-figure below, including ones already published, so the threshold is surfaced and
-the decision left explicit.
+This is reported rather than applied as a filter: excluding rows would change
+every figure below. The threshold is shown so the choice stays explicit.
 
 ```{r contention-steal, echo=FALSE}
 steal_summary <- DBI::dbGetQuery(con, sprintf("
@@ -678,12 +677,11 @@ order by placement_class, client_machine_type, os_tuning, target_gbps, udp_lengt
 
 # Every UDP section below filters on one reference datagram size, so a result
 # set whose UDP arms used a different one renders as a series of empty tables
-# with nothing to say why. That is the same silent-omission failure as a run
-# whose artifacts were skipped: the report looks complete and is not.
+# with nothing to say why -- the report would look complete and not be.
 #
 # The capacity arms added to the latency ladder use 1472 B (1472 + 8 + 20 = 1500,
 # the largest datagram that crosses a standard MTU without fragmenting), while
-# the older suite used 1492. Whichever a result set contains, say so rather than
+# some earlier runs used 1492. Say which a result set contains rather than
 # showing a blank table.
 udp_lengths_present <- sql("
 select udp_length_bytes, count(*) as n
@@ -1496,7 +1494,7 @@ if (nrow(lat_rate) == 0) {
   no_data("No under-load sockperf rows to plot.")
 } else {
   # Only rungs that actually delivered their offered load are interpretable,
-  # measured on arrivals rather than sends -- see the protocol-delta query.
+  # measured on arrivals rather than sends.
   lat_rate$delivered_pct <- 100 * lat_rate$delivered_mps / lat_rate$offered_mps
   usable <- lat_rate[!is.na(lat_rate$delivered_pct) & lat_rate$delivered_pct >= ul_min_delivered, ]
   dropped_rungs <- nrow(lat_rate) - nrow(usable)
@@ -1535,10 +1533,9 @@ if (nrow(lat_rate) == 0) {
 }
 ```
 
-The protocol comparison, which is the study's headline number. Two arms are only
-compared when they ran at the same **achieved** load, not merely the same
-requested one -- see the note below the table for why that distinction decides
-the result.
+Two arms are compared only when they ran at the same **achieved** load, not
+merely the same requested one. The note below the table explains why that
+distinction decides the result.
 
 ```{r latency-rate-protocol-delta}
 proto_delta <- sql(sprintf("
@@ -1759,8 +1756,7 @@ if (nrow(frag) == 0) {
   frag$ip_fragments <- ceiling(frag$msg_size_bytes / frag$frame_capacity_bytes)
   frag$mtu_mismatch <- !is.na(frag$server_mtu) & frag$client_mtu != frag$server_mtu
   flagged <- frag[!is.na(frag$ip_fragments) & (frag$ip_fragments > 1 | frag$mtu_mismatch), ]
-  # Note first, so kable() can be the last expression and get knitr's table
-  # treatment; see the purchase-model chunk for why print(kable(...)) does not.
+  # Note first, so kable() stays the last expression and is auto-printed.
   cat("Note: this is the *interface* MTU. The path MTU can be lower, especially across regions or peered networks, and is not measured here.\n\n")
   if (nrow(flagged) == 0) {
     cat("Every UDP message fits in a single frame at the recorded MTU, and client and server MTUs agree.\n")
@@ -1789,10 +1785,8 @@ if (nrow(purchase) == 0) {
   cat("No sockperf rows.\n")
 } else {
   distinct_models <- setdiff(unique(c(purchase$client_model, purchase$server_model)), "not recorded")
-  # The warning is emitted first so that kable() is the last expression in the
-  # block. knitr only gives a kable object its table treatment when it is
-  # auto-printed; wrapping it in print() emits the markdown as verbatim console
-  # output instead, which renders as a code block rather than a table.
+  # Warning first, so kable() stays the last expression: knitr only formats a
+  # kable object when it is auto-printed, not when wrapped in print().
   if (length(distinct_models) > 1) {
     cat(sprintf("WARNING: this result set spans %s. Keep every arm of a comparison on one purchasing model, or the host draw differs between arms.\n\n",
                 paste(distinct_models, collapse = " and ")))
@@ -1832,9 +1826,8 @@ if (nrow(within) == 0) {
 ```
 
 ```{r data-quality-control}
-# Reads sockperf_all, not the control-free view, and matches the suffix with
-# ends_with rather than LIKE: in SQL LIKE, '_' is a single-character wildcard, so
-# '%__control' also matches names such as 'foo-XXcontrol'.
+# Reads sockperf_all rather than the control-free view. ends_with, not LIKE:
+# '_' is a single-character wildcard in LIKE and would over-match.
 control_drift <- sql("
 select s.base_scenario_name as scenario,
        s.protocol, s.benchmark_name,
